@@ -6,9 +6,11 @@ from pathlib import Path
 import click
 
 from config import load_settings
+from image_generator import generate_images_from_prompts
 from logging_config import get_logger
 from story_generator import StoryGenerator, StoryRequest
 from utils import create_run_output_dir, slugify
+from video_composer import create_video_from_images_and_audio
 from voice_generator import generate_voice_audio
 
 
@@ -31,7 +33,25 @@ from voice_generator import generate_voice_audio
     type=int,
     help="Number of image prompts to generate (default: 6)",
 )
-def main(topic: str, target_seconds: int, num_images: int) -> None:
+@click.option(
+    "--generate-images",
+    is_flag=True,
+    default=False,
+    help="Generate images from prompts using Hugging Face (free)",
+)
+@click.option(
+    "--generate-video",
+    is_flag=True,
+    default=False,
+    help="Generate final video combining images and audio",
+)
+def main(
+    topic: str,
+    target_seconds: int,
+    num_images: int,
+    generate_images: bool,
+    generate_video: bool,
+) -> None:
     """
     Generate AI story content for YouTube Shorts.
 
@@ -42,6 +62,8 @@ def main(topic: str, target_seconds: int, num_images: int) -> None:
     - A YouTube description
     - A list of image prompts (for 4-8 images)
     - An MP3 narration file
+    - Images (if --generate-images flag is used)
+    - Final video (if --generate-video flag is used)
 
     All outputs are saved to a timestamped folder under outputs/.
     """
@@ -61,6 +83,8 @@ def main(topic: str, target_seconds: int, num_images: int) -> None:
     logger.info(f"Topic: {topic}")
     logger.info(f"Target duration: {target_seconds} seconds")
     logger.info(f"Number of images: {num_images}")
+    logger.info(f"Generate images: {generate_images}")
+    logger.info(f"Generate video: {generate_video}")
     logger.info("=" * 60)
 
     try:
@@ -120,6 +144,7 @@ def main(topic: str, target_seconds: int, num_images: int) -> None:
 
         # Generate voice audio
         logger.info("Step 4: Generating voice audio...")
+        narration_path = None
         try:
             narration_path = output_dir / "narration.mp3"
             generate_voice_audio(result.story_script, narration_path, settings, logger)
@@ -127,6 +152,51 @@ def main(topic: str, target_seconds: int, num_images: int) -> None:
         except Exception as e:
             logger.error(f"Failed to generate voice audio: {e}")
             logger.warning("Continuing without audio file...")
+            narration_path = None
+
+        # Generate images
+        image_paths = []
+        if generate_images:
+            logger.info("Step 5: Generating images from prompts...")
+            try:
+                images_dir = output_dir / "images"
+                image_paths = generate_images_from_prompts(
+                    result.image_prompts, images_dir, settings, logger
+                )
+                logger.info(f"Generated {len(image_paths)} images")
+            except Exception as e:
+                logger.error(f"Failed to generate images: {e}")
+                logger.warning("Continuing without images...")
+        else:
+            logger.info("Step 5: Skipping image generation (use --generate-images to enable)")
+
+        # Generate video
+        if generate_video:
+            logger.info("Step 6: Generating final video...")
+            if not image_paths:
+                logger.warning("No images available for video generation")
+                logger.warning("Run with --generate-images first, or provide images manually")
+            elif not narration_path or not narration_path.exists():
+                logger.warning("No audio available for video generation")
+                logger.warning("Audio generation must succeed for video creation")
+            else:
+                try:
+                    video_path = output_dir / "video.mp4"
+                    create_video_from_images_and_audio(
+                        image_paths,
+                        narration_path,
+                        video_path,
+                        settings,
+                        logger,
+                        show_text=True,
+                        text_content=result.story_script,
+                    )
+                    logger.info(f"Video generated: {video_path}")
+                except Exception as e:
+                    logger.error(f"Failed to generate video: {e}")
+                    logger.warning("Continuing without video file...")
+        else:
+            logger.info("Step 6: Skipping video generation (use --generate-video to enable)")
 
         # Summary
         logger.info("=" * 60)
@@ -144,6 +214,10 @@ def main(topic: str, target_seconds: int, num_images: int) -> None:
         print(f"  - metadata.json")
         if (output_dir / "narration.mp3").exists():
             print(f"  - narration.mp3")
+        if image_paths:
+            print(f"  - {len(image_paths)} images in images/ directory")
+        if (output_dir / "video.mp4").exists():
+            print(f"  - video.mp4")
 
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)

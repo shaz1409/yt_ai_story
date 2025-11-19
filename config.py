@@ -14,6 +14,7 @@ class Settings(BaseModel):
     elevenlabs_voice_id: str
     model_name: str = Field(default="gpt-4o-mini")
     output_base_dir: str = Field(default="outputs")
+    huggingface_token: str = Field(default="", description="Optional HF token for higher rate limits")
 
     class Config:
         """Pydantic config."""
@@ -30,5 +31,6 @@ def load_settings() -> Settings:
         elevenlabs_voice_id=os.getenv("ELEVENLABS_VOICE_ID", ""),
         model_name=os.getenv("MODEL_NAME", "gpt-4o-mini"),
         output_base_dir=os.getenv("OUTPUT_BASE_DIR", "outputs"),
+        huggingface_token=os.getenv("HUGGINGFACE_TOKEN", ""),
     )
 
