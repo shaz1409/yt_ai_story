@@ -1,5 +1,7 @@
 """Text utility functions for story processing."""
 
+# This module is part of app.utils package
+
 
 def estimate_spoken_duration(text: str, words_per_minute: int = 150) -> int:
     """

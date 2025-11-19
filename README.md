@@ -1,161 +1,201 @@
-# YouTube Auto Story Generator
+# AI Story Shorts Factory
 
-A Python tool to generate AI-powered story content for YouTube Shorts. This tool creates complete story packages including scripts, titles, descriptions, image prompts, and voice narration.
+An automated pipeline for generating viral YouTube Shorts from story topics. The system generates structured emotional stories, creates photoreal character animations, renders vertical videos, and optionally uploads to YouTube.
 
-## Features
+## 🎯 Features
 
-- **AI Story Generation**: Uses OpenAI to generate engaging, dramatic stories (30-60 seconds)
-- **Voice Narration**: Converts story scripts to MP3 audio using ElevenLabs
-- **Image Generation**: Generate images from prompts using Hugging Face Stable Diffusion (FREE)
-- **Video Composition**: Automatically combine images, audio, and text overlays into final video
-- **Complete Content Package**: Generates hooks, titles, descriptions, and image prompts
-- **Organized Outputs**: Saves everything to timestamped folders for easy management
+- **Auto Story Selection**: Automatically finds and scores high-virality stories from niches (courtroom, relationship_drama, injustice, etc.)
+- **Emotional Narrative Arcs**: Generates stories with HOOK → SETUP → CONFLICT → TWIST → RESOLUTION structure
+- **Photoreal Character Animations**: Talking-head clips for key dialogue lines (Option B architecture)
+- **Multi-Style Support**: Courtroom drama, ragebait, relationship drama
+- **Full Pipeline**: Topic → Story → VideoPlan → Rendered Video → YouTube Upload
+- **Modular Architecture**: Clean, extensible services ready for production
 
-## Setup
+## 🚀 Quick Start
 
-### 1. Create Virtual Environment
+### 1. Install Dependencies
 
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements_backend.txt
 ```
 
-### 2. Install Dependencies
+### 2. Configure API Keys
 
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Configure API Keys
-
-Copy the example environment file and fill in your API keys:
+Copy `.env.example` to `.env` and fill in your API keys:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and add your credentials:
+Required:
+- `OPENAI_API_KEY` - For story generation
+- `ELEVENLABS_API_KEY` + `ELEVENLABS_VOICE_ID` - For narration (or use OpenAI TTS)
 
-```
-OPENAI_API_KEY=your_openai_key_here
-ELEVENLABS_API_KEY=your_elevenlabs_key_here
-ELEVENLABS_VOICE_ID=your_default_voice_id_here
-MODEL_NAME=gpt-4o-mini
-HUGGINGFACE_TOKEN=your_hf_token_here  # Optional: for higher rate limits on image generation
-```
+Optional:
+- `HUGGINGFACE_TOKEN` - Improves image generation rate limits
+- `YOUTUBE_CLIENT_SECRETS_FILE` - For automatic YouTube uploads
 
-**Getting API Keys:**
-- **OpenAI**: Get your API key from [platform.openai.com](https://platform.openai.com/api-keys)
-- **ElevenLabs**: Sign up at [elevenlabs.io](https://elevenlabs.io) and get your API key and voice ID from your dashboard
-- **Hugging Face** (optional): Get a free token from [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) for higher rate limits (image generation works without it too!)
+### 3. Run the Pipeline
 
-### 4. Run
-
-**Basic (text and audio only):**
+**Auto-select a high-virality story:**
 ```bash
-python run_story.py --topic "teen laughs in court after verdict" --target-seconds 45 --num-images 6
+python run_full_pipeline.py \
+  --auto-topic \
+  --niche "courtroom" \
+  --style "courtroom_drama" \
+  --auto-upload
 ```
 
-**With image generation (FREE):**
+**Use a specific topic:**
 ```bash
-python run_story.py --topic "teen laughs in court after verdict" --target-seconds 45 --num-images 6 --generate-images
+python run_full_pipeline.py \
+  --topic "teen laughs in court after verdict" \
+  --style "courtroom_drama" \
+  --duration-target-seconds 60 \
+  --auto-upload
 ```
 
-**Full pipeline (images + video):**
+## 📖 Documentation
+
+- **[Backend Documentation](docs/backend.md)** - Complete backend architecture
+- **[Quick Start Guide](docs/quickstart.md)** - Detailed setup instructions
+- **[Pipeline Documentation](docs/pipeline.md)** - Full pipeline implementation details
+- **[Story Sourcing](docs/story_sourcing.md)** - Auto story selection and virality scoring
+- **[Quality Audit](docs/quality_audit.md)** - Quality improvements and roadmap
+
+## 🏗️ Architecture
+
+```
+Topic / Niche
+  ↓
+Story Sourcing & Virality Scoring
+  ↓
+Story Rewriting → VideoPlan
+  ↓
+Character Generation + Dialogue + Narration
+  ↓
+Video Rendering
+  ├─ Character Face Images
+  ├─ Talking-Head Clips (key dialogue)
+  ├─ Scene Visuals
+  └─ Final Composition
+  ↓
+YouTube Upload (optional)
+```
+
+## 🎬 Talking-Head Character Animations
+
+The system uses **Option B** architecture:
+- Generates photoreal character face images
+- Creates talking-head clips for top N emotional dialogue lines
+- Inserts clips into video timeline at appropriate scenes
+- Narrator handles most storytelling, characters speak key lines
+
+**Configuration:**
 ```bash
-python run_story.py --topic "teen laughs in court after verdict" --target-seconds 45 --num-images 6 --generate-images --generate-video
+# Disable talking-heads
+--no-talking-heads
+
+# Set max animated lines
+--max-talking-head-lines 5
 ```
 
-## Usage
+## 📁 Project Structure
 
-### Basic Command
+```
+app/
+  api/          # FastAPI routes
+  core/         # Config, logging
+  models/       # Pydantic schemas
+  services/     # Business logic services
+  utils/        # Utility functions
+  storage/      # Episode storage
+  pipelines/    # Orchestrator scripts
+
+docs/           # Documentation
+tests/
+  unit/         # Unit tests
+  integration/  # Integration tests
+
+run_full_pipeline.py  # Main CLI entrypoint
+```
+
+## 🧪 Testing
 
 ```bash
-python run_story.py --topic "your story topic here"
+# Run all tests
+pytest
+
+# Run unit tests only
+pytest tests/unit/
+
+# Run integration tests
+pytest tests/integration/
 ```
 
-### Options
+## ⚙️ Configuration
 
-- `--topic` (required): The topic for your story
-- `--target-seconds` (default: 45): Target duration in seconds (30-60 recommended)
-- `--num-images` (default: 6): Number of image prompts to generate (4-8 recommended)
-- `--generate-images` (flag): Generate images from prompts using Hugging Face (FREE, no API key required)
-- `--generate-video` (flag): Create final video combining images, audio, and text overlays
+All configuration is done via environment variables (see `.env.example`):
 
-### Example
+- **LLM Settings**: `OPENAI_API_KEY`, `OPENAI_MODEL`
+- **TTS Settings**: `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`
+- **Image Generation**: `HUGGINGFACE_TOKEN`
+- **Talking Heads**: `USE_TALKING_HEADS`, `MAX_TALKING_HEAD_LINES_PER_VIDEO`
+- **Story Sourcing**: `USE_LLM_FOR_STORY_FINDER`
+- **YouTube**: `YOUTUBE_CLIENT_SECRETS_FILE`
+
+## 🛠️ Development
+
+### Code Quality
+
+The project uses:
+- **ruff** for linting
+- **black** for formatting
+- **pytest** for testing
+
+### Adding New Services
+
+1. Create service in `app/services/`
+2. Add tests in `tests/unit/`
+3. Update `app/core/config.py` if new settings needed
+4. Document in `docs/`
+
+## 📝 CLI Options
 
 ```bash
-python run_story.py --topic "mysterious package arrives at doorstep" --target-seconds 50 --num-images 8
+python run_full_pipeline.py --help
 ```
 
-## Output Structure
+**Key Flags:**
+- `--topic` - Specific story topic (or use `--auto-topic`)
+- `--auto-topic` - Auto-select high-virality story
+- `--niche` - Story niche (courtroom, relationship_drama, injustice, workplace_drama)
+- `--style` - Story style (courtroom_drama, ragebait, relationship_drama)
+- `--duration-target-seconds` - Target video length
+- `--auto-upload` - Automatically upload to YouTube
+- `--no-talking-heads` - Disable character animations
+- `--max-talking-head-lines` - Max animated dialogue lines
 
-Each run creates a timestamped folder under `outputs/` with the following files:
+## 🎯 Use Cases
 
-```
-outputs/
-└── 2025-01-13_143022_mysterious-package-arrives/
-    ├── hook.txt              # Opening hook line
-    ├── story_script.txt      # Full story narration text
-    ├── title.txt             # YouTube title
-    ├── description.txt       # YouTube description
-    ├── image_prompts.txt     # Numbered list of image prompts
-    ├── metadata.json         # All data in JSON format
-    ├── narration.mp3         # Voice narration audio file
-    ├── images/               # Generated images (if --generate-images used)
-    │   ├── image_01.png
-    │   ├── image_02.png
-    │   └── ...
-    └── video.mp4             # Final video (if --generate-video used)
-```
+1. **Batch Content Creation**: Generate multiple videos from a niche
+2. **Viral Story Discovery**: Auto-find high-virality stories
+3. **Consistent Branding**: Same character faces across episodes
+4. **Rapid Prototyping**: Test different story styles quickly
 
-## Project Structure
+## 📄 License
 
-```
-yt_auto_story/
-├── README.md
-├── requirements.txt
-├── .env.example
-├── .gitignore
-├── config.py                 # Configuration management
-├── logging_config.py         # Logging setup
-├── run_story.py              # Main entrypoint
-├── story_generator.py        # OpenAI story generation
-├── voice_generator.py        # ElevenLabs voice generation
-├── image_generator.py        # Hugging Face image generation (FREE)
-├── video_composer.py         # MoviePy video composition
-├── utils/
-│   ├── __init__.py
-│   ├── io_utils.py           # File/directory utilities
-│   └── text_utils.py         # Text processing utilities
-└── outputs/                  # Generated content (git-ignored)
-```
+See LICENSE file (if applicable)
 
-## Next Steps
+## 🤝 Contributing
 
-This tool now generates complete YouTube Shorts videos! Future enhancements could include:
+1. Follow the existing code structure
+2. Add tests for new features
+3. Update documentation
+4. Ensure all tests pass
 
-- **Batch Processing**: Generate multiple stories at once
-- **Custom Voice Settings**: Fine-tune ElevenLabs voice parameters
-- **Story Variations**: Generate multiple versions of the same story
-- **Advanced Video Effects**: Transitions, animations, and more sophisticated text overlays
-- **Multiple Image Models**: Support for different free image generation models
+---
 
-## Logging
-
-Logs are written to:
-- **Console**: Real-time colored output
-- **File**: `outputs/latest_run.log` (rotates at 10MB, keeps 7 days)
-
-## Requirements
-
-- Python 3.8+
-- OpenAI API key
-- ElevenLabs API key and voice ID
-- ffmpeg (required for video composition - install via `brew install ffmpeg` on Mac or `apt-get install ffmpeg` on Linux)
-- Hugging Face token (optional, for higher rate limits on free image generation)
-
-## License
-
-MIT
-
+**Built with**: Python 3.11+, FastAPI, Pydantic, MoviePy, OpenAI, ElevenLabs

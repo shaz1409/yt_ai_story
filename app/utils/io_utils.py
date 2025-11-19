@@ -1,5 +1,7 @@
 """I/O utility functions for file and directory operations."""
 
+# This module is part of app.utils package
+
 import re
 from datetime import datetime
 from pathlib import Path

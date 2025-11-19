@@ -1,0 +1,154 @@
+{
+  "episode_id": "episode_abc123def456",
+  "topic": "courtroom drama – teen laughs at verdict",
+  "duration_target_seconds": 60,
+  "style": "courtroom_drama",
+  "title": "Teen Laughs in Court - Breaking News",
+  "logline": "A dramatic story about teen laughs in court - breaking news that unfolds with unexpected consequences.",
+  "characters": [
+    {
+      "id": "judge_a1b2c3d4",
+      "role": "judge",
+      "name": "Judge Williams",
+      "appearance": {
+        "age_range": "50-70",
+        "gender": "any",
+        "formality": "high",
+        "unique_id": "e5f6g7h8"
+      },
+      "personality": "authoritative, stern, fair, experienced",
+      "voice_profile": "deep authoritative"
+    },
+    {
+      "id": "defendant_i9j0k1l2",
+      "role": "defendant",
+      "name": "Alex Smith",
+      "appearance": {
+        "age_range": "18-40",
+        "gender": "any",
+        "formality": "low",
+        "unique_id": "m3n4o5p6"
+      },
+      "personality": "nervous, defensive, emotional, anxious",
+      "voice_profile": "young anxious"
+    },
+    {
+      "id": "lawyer_q7r8s9t0",
+      "role": "lawyer",
+      "name": "Attorney Brown",
+      "appearance": {
+        "age_range": "30-60",
+        "gender": "any",
+        "formality": "high",
+        "unique_id": "u1v2w3x4"
+      },
+      "personality": "confident, articulate, strategic, persuasive",
+      "voice_profile": "confident professional"
+    },
+    {
+      "id": "narrator_y5z6a7b8",
+      "role": "narrator",
+      "name": "Narrator",
+      "appearance": {},
+      "personality": "neutral, clear, engaging",
+      "voice_profile": "clear neutral"
+    }
+  ],
+  "scenes": [
+    {
+      "scene_id": 1,
+      "description": "Scene 1: In a dramatic courtroom scene, a teenager sits nervously. The judge prepares to deliver the verdict...",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. In a dramatic courtroom scene, a teenager sits nervously. The judge prepares to deliver the verdict...",
+      "camera_style": "wide_shot",
+      "narration": [
+        {
+          "text": "In a dramatic courtroom scene, a teenager sits nervously. The judge prepares to deliver the verdict.",
+          "emotion": "dramatic",
+          "scene_id": 1
+        },
+        {
+          "text": "Tension fills the air as everyone waits for the moment of truth.",
+          "emotion": "tense",
+          "scene_id": 1
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "judge_a1b2c3d4",
+          "text": "The court will now proceed.",
+          "emotion": "neutral",
+          "scene_id": 1,
+          "approx_timing_hint": 2.0
+        },
+        {
+          "character_id": "defendant_i9j0k1l2",
+          "text": "I can't believe this is happening.",
+          "emotion": "shocked",
+          "scene_id": 1,
+          "approx_timing_hint": 5.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: In a dramatic courtroom scene, a teenager sits nervously. The judge prepares to deliver the verdict...",
+        "Detail shot related to In a dramatic courtroom scene, a teenager sits nervously"
+      ]
+    },
+    {
+      "scene_id": 2,
+      "description": "Scene 2: Unexpectedly, the teen bursts into laughter, shocking everyone present. The reaction is completely unexpected...",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. Unexpectedly, the teen bursts into laughter, shocking everyone present. The reaction is completely unexpected...",
+      "camera_style": "medium_shot",
+      "narration": [
+        {
+          "text": "Unexpectedly, the teen bursts into laughter, shocking everyone present.",
+          "emotion": "dramatic",
+          "scene_id": 2
+        },
+        {
+          "text": "The reaction is completely unexpected and changes everything.",
+          "emotion": "dramatic",
+          "scene_id": 2
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "lawyer_q7r8s9t0",
+          "text": "Your honor, I object!",
+          "emotion": "tense",
+          "scene_id": 2,
+          "approx_timing_hint": 8.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: Unexpectedly, the teen bursts into laughter, shocking everyone present. The reaction is completely unexpected...",
+        "Detail shot related to Unexpectedly, the teen bursts into laughter"
+      ]
+    },
+    {
+      "scene_id": 3,
+      "description": "Scene 3: The courtroom erupts in confusion. The judge tries to restore order while the teen's unexpected reaction reveals deeper emotions...",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. The courtroom erupts in confusion. The judge tries to restore order while the teen's unexpected reaction reveals deeper emotions...",
+      "camera_style": "close_up",
+      "narration": [
+        {
+          "text": "The courtroom erupts in confusion. The judge tries to restore order.",
+          "emotion": "tense",
+          "scene_id": 3
+        },
+        {
+          "text": "The teen's unexpected reaction reveals deeper emotions beneath the surface.",
+          "emotion": "emotional",
+          "scene_id": 3
+        }
+      ],
+      "dialogue": [],
+      "b_roll_prompts": [
+        "B-roll: The courtroom erupts in confusion. The judge tries to restore order while the teen's unexpected reaction reveals deeper emotions...",
+        "Detail shot related to The courtroom erupts in confusion"
+      ]
+    }
+  ],
+  "created_at": "2025-01-13T12:00:00.000000",
+  "version": "1.0"
+}
+
