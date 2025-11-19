@@ -43,3 +43,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# Secrets
+secrets/
+*.json
+!package.json
+!package-lock.json
+
