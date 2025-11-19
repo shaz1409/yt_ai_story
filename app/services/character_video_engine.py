@@ -8,6 +8,10 @@ import requests
 from moviepy.editor import AudioFileClip, ImageClip
 from PIL import Image
 
+# Compatibility shim for Pillow 10.0.0+ (ANTIALIAS was removed)
+if not hasattr(Image, "ANTIALIAS"):
+    Image.ANTIALIAS = Image.Resampling.LANCZOS
+
 from app.core.config import Settings
 from app.core.logging_config import get_logger
 from app.models.schemas import Character, DialogueLine, VideoPlan
@@ -184,10 +188,14 @@ class CharacterVideoEngine:
             self.logger.info(f"Character face image not found, generating: {face_image_path}")
             self.generate_character_face_image(character, character_faces_dir, style)
 
-        # Generate talking-head clip
-        self.talking_head_provider.generate_talking_head(face_image_path, audio_path, clip_path)
-
-        return clip_path
+        # Generate talking-head clip with fallback
+        try:
+            self.talking_head_provider.generate_talking_head(face_image_path, audio_path, clip_path)
+            return clip_path
+        except Exception as e:
+            self.logger.warning(f"Talking-head generation failed for {character.name}: {e}, will fallback to scene visual")
+            # Return None to signal failure - VideoRenderer will handle fallback
+            raise
 
     def ensure_character_assets(
         self, video_plan: VideoPlan, output_dir: Path, style: str = "courtroom_drama"
@@ -296,10 +304,13 @@ class CharacterVideoEngine:
             self._create_placeholder_character_image(output_path, None, prompt)
 
     def _generate_image_hf(self, prompt: str, output_path: Path) -> None:
-        """Generate image using Hugging Face API."""
-        model_id = "stabilityai/stable-diffusion-2-1"
-        api_url = f"https://api-inference.huggingface.co/models/{model_id}"
-
+        """Generate image using Hugging Face API with configurable models."""
+        # Build model list: primary first (if set), then fallback models
+        models_to_try = []
+        if self.settings.hf_image_model_primary:
+            models_to_try.append(self.settings.hf_image_model_primary)
+        models_to_try.extend(self.settings.hf_image_models)
+        
         headers = {"Content-Type": "application/json"}
         hf_token = getattr(self.settings, "huggingface_token", "")
         if hf_token and hf_token.strip():
@@ -313,29 +324,58 @@ class CharacterVideoEngine:
             },
         }
 
-        try:
-            response = requests.post(api_url, json=payload, headers=headers, timeout=60)
-
-            if response.status_code == 503:
-                self.logger.warning("Model loading, waiting 10 seconds...")
-                import time
-
-                time.sleep(10)
+        last_error = None
+        for model_id in models_to_try:
+            api_url = f"https://api-inference.huggingface.co/models/{model_id}"
+            try:
+                self.logger.debug(f"Trying model: {model_id}")
                 response = requests.post(api_url, json=payload, headers=headers, timeout=60)
 
-            if response.status_code != 200:
-                raise Exception(f"Hugging Face API error: {response.status_code}")
+                if response.status_code == 503:
+                    self.logger.warning(f"Model {model_id} loading, waiting 10 seconds...")
+                    import time
+                    time.sleep(10)
+                    response = requests.post(api_url, json=payload, headers=headers, timeout=60)
 
-            # Save and resize image
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            image = Image.open(io.BytesIO(response.content))
-            # Crop to portrait aspect ratio (focus on face)
-            target_size = (1080, 1920)  # 9:16 vertical
-            image = image.resize(target_size, Image.Resampling.LANCZOS)
-            image.save(output_path, "PNG", quality=95)
+                if response.status_code == 410:
+                    # Model gone, try next
+                    self.logger.warning(
+                        f"Model {model_id} returned 410 (Gone) – check if this model still supports HF Inference API."
+                    )
+                    continue
 
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Network error calling Hugging Face API: {e}")
+                if response.status_code != 200:
+                    # Extract error message from response body (first 200 chars)
+                    error_body = ""
+                    try:
+                        error_body = response.text[:200] if hasattr(response, "text") else ""
+                    except:
+                        pass
+                    
+                    error_msg = f"Hugging Face API error for {model_id}: status {response.status_code}"
+                    if error_body:
+                        error_msg += f" - {error_body}"
+                    
+                    self.logger.warning(error_msg)
+                    raise Exception(error_msg)
+
+                # Success - save image and break out of loop
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                image = Image.open(io.BytesIO(response.content))
+                # Crop to portrait aspect ratio (focus on face)
+                target_size = (1080, 1920)  # 9:16 vertical
+                image = image.resize(target_size, Image.Resampling.LANCZOS)
+                image.save(output_path, "PNG", quality=95)
+                self.logger.info(f"Successfully generated image using model: {model_id}")
+                return  # Success, exit function
+                
+            except Exception as e:
+                last_error = e
+                self.logger.warning(f"Model {model_id} failed: {e}, trying next...")
+                continue
+        
+        # All models failed
+        raise Exception(f"All Hugging Face models failed. Last error: {last_error}")
 
     def _create_placeholder_character_image(
         self, output_path: Path, character: Optional[Character] = None, prompt: str = ""

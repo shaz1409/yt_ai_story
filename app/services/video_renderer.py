@@ -8,6 +8,10 @@ import requests
 from moviepy.editor import AudioFileClip, CompositeVideoClip, ImageClip, TextClip, VideoFileClip, concatenate_videoclips
 from PIL import Image
 
+# Compatibility shim for Pillow 10.0.0+ (ANTIALIAS was removed)
+if not hasattr(Image, "ANTIALIAS"):
+    Image.ANTIALIAS = Image.Resampling.LANCZOS
+
 from app.core.config import Settings
 from app.core.logging_config import get_logger
 from app.models.schemas import Character, DialogueLine, VideoPlan
@@ -71,7 +75,7 @@ class VideoRenderer:
             # Step 2b: Generate dialogue audio and talking-head clips
             self.logger.info("Step 2b: Generating dialogue audio and talking-head clips...")
             talking_head_clips = self._generate_talking_head_clips(video_plan, output_dir)
-            self.logger.info(f"Generated {len(talking_head_clips)} talking-head clips")
+            self.logger.info(f"Generated {len(talking_head_clips)} talking-head clips (some may have failed and will use fallback)")
         else:
             self.logger.info("Talking heads disabled, skipping character asset generation")
 
@@ -334,10 +338,13 @@ class VideoRenderer:
             self._create_placeholder_image(output_path, None, prompt)
 
     def _generate_image_hf(self, prompt: str, output_path: Path) -> None:
-        """Generate image using Hugging Face API."""
-        model_id = "stabilityai/stable-diffusion-2-1"
-        api_url = f"https://api-inference.huggingface.co/models/{model_id}"
-
+        """Generate image using Hugging Face API with configurable models."""
+        # Build model list: primary first (if set), then fallback models
+        models_to_try = []
+        if self.settings.hf_image_model_primary:
+            models_to_try.append(self.settings.hf_image_model_primary)
+        models_to_try.extend(self.settings.hf_image_models)
+        
         headers = {"Content-Type": "application/json"}
         hf_token = getattr(self.settings, "huggingface_token", "")
         if hf_token and hf_token.strip():
@@ -351,32 +358,61 @@ class VideoRenderer:
             },
         }
 
-        try:
-            response = requests.post(api_url, json=payload, headers=headers, timeout=60)
-
-            if response.status_code == 503:
-                self.logger.warning("Model loading, waiting 10 seconds...")
-                import time
-
-                time.sleep(10)
+        last_error = None
+        for model_id in models_to_try:
+            api_url = f"https://api-inference.huggingface.co/models/{model_id}"
+            try:
+                self.logger.debug(f"Trying model: {model_id}")
                 response = requests.post(api_url, json=payload, headers=headers, timeout=60)
 
-            if response.status_code != 200:
-                raise Exception(f"Hugging Face API error: {response.status_code}")
+                if response.status_code == 503:
+                    self.logger.warning(f"Model {model_id} loading, waiting 10 seconds...")
+                    import time
+                    time.sleep(10)
+                    response = requests.post(api_url, json=payload, headers=headers, timeout=60)
 
-            # Save and resize image
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            image = Image.open(io.BytesIO(response.content))
-            target_size = (1080, 1920)  # 9:16 vertical
-            image = image.resize(target_size, Image.Resampling.LANCZOS)
-            image.save(output_path, "PNG", quality=95)
+                if response.status_code == 410:
+                    # Model gone, try next
+                    self.logger.warning(
+                        f"Model {model_id} returned 410 (Gone) – check if this model still supports HF Inference API."
+                    )
+                    continue
 
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Network error calling Hugging Face API: {e}")
+                if response.status_code != 200:
+                    # Extract error message from response body (first 200 chars)
+                    error_body = ""
+                    try:
+                        error_body = response.text[:200] if hasattr(response, "text") else ""
+                    except:
+                        pass
+                    
+                    error_msg = f"Hugging Face API error for {model_id}: status {response.status_code}"
+                    if error_body:
+                        error_msg += f" - {error_body}"
+                    
+                    self.logger.warning(error_msg)
+                    raise Exception(error_msg)
+
+                # Success - save image and break out of loop
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                image = Image.open(io.BytesIO(response.content))
+                target_size = (1080, 1920)  # 9:16 vertical
+                image = image.resize(target_size, Image.Resampling.LANCZOS)
+                image.save(output_path, "PNG", quality=95)
+                self.logger.info(f"Successfully generated image using model: {model_id}")
+                return  # Success, exit function
+                
+            except Exception as e:
+                last_error = e
+                self.logger.warning(f"Model {model_id} failed: {e}, trying next...")
+                continue
+        
+        # All models failed
+        raise Exception(f"All Hugging Face models failed. Last error: {last_error}")
 
     def _create_placeholder_image(self, output_path: Path, scene: Any = None, prompt: str = "") -> None:
         """
-        Create a placeholder image (colored background with text).
+        Create a professional placeholder image (blurred background with readable text overlay).
 
         Args:
             output_path: Path to save image
@@ -384,35 +420,90 @@ class VideoRenderer:
             prompt: Optional prompt text
         """
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        from PIL import ImageDraw, ImageFont, ImageFilter
 
-        # Create a simple colored background
+        # Create image (1080x1920 vertical)
         width, height = 1080, 1920
-        image = Image.new("RGB", (width, height), color=(30, 30, 50))  # Dark blue-gray
+        
+        # Create gradient background (dark blue-gray to darker)
+        image = Image.new("RGB", (width, height), color=(20, 25, 40))
+        draw = ImageDraw.Draw(image)
+        
+        # Add gradient effect (darker at edges)
+        for y in range(height):
+            alpha = int(255 * (1 - abs(y - height // 2) / (height // 2)) * 0.3)
+            color = (20 + alpha // 10, 25 + alpha // 10, 40 + alpha // 8)
+            draw.rectangle([(0, y), (width, y + 1)], fill=color)
+        
+        # Apply blur for professional look
+        image = image.filter(ImageFilter.GaussianBlur(radius=2))
 
-        # Add text if available
+        # Try to load a bold font
         try:
-            from PIL import ImageDraw, ImageFont
-
-            draw = ImageDraw.Draw(image)
-            text = scene.description[:50] if scene and scene.description else prompt[:50] if prompt else "Scene"
-
-            # Try to use a font, fallback to default
+            font_large = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 72)
+            font_medium = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 48)
+        except:
             try:
-                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 60)
+                font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
+                font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
             except:
-                font = ImageFont.load_default()
+                font_large = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
 
-            # Center text
-            bbox = draw.textbbox((0, 0), text, font=font)
+        # Extract scene description or use prompt
+        if scene and hasattr(scene, 'description'):
+            text = scene.description
+        else:
+            text = prompt or "Scene"
+        
+        # Clean up text - remove camera/lighting metadata, keep core description
+        import re
+        text = re.sub(r'^(Extreme Close-Up|Medium Shot|Wide Shot|Dramatic Close-Up|Close-Up) of\s+', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\s+[A-Z][a-z]+ atmosphere\.\s+.*?lighting\.\s+.*?setting.*$', '', text)
+        
+        # Split into words and create readable lines (max 8 words per line, 3 lines max)
+        words = text.split()[:24]  # Max 24 words total
+        lines = []
+        current_line = []
+        for word in words:
+            if len(current_line) < 8:
+                current_line.append(word)
+            else:
+                lines.append(" ".join(current_line))
+                current_line = [word]
+                if len(lines) >= 3:
+                    break
+        if current_line and len(lines) < 3:
+            lines.append(" ".join(current_line))
+        
+        if not lines:
+            lines = [text[:50]]
+
+        # Draw semi-transparent overlay for text readability
+        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 120))
+        image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(image)
+
+        # Center text vertically
+        total_text_height = len(lines) * 100
+        y_start = (height - total_text_height) // 2
+
+        # Draw text with shadow for readability
+        for i, line in enumerate(lines):
+            y_pos = y_start + i * 100
+            font = font_large if i == 0 else font_medium
+            
+            # Get text dimensions for centering
+            bbox = draw.textbbox((0, 0), line, font=font)
             text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-            position = ((width - text_width) // 2, (height - text_height) // 2)
+            x_pos = (width - text_width) // 2
+            
+            # Draw shadow (slightly offset)
+            draw.text((x_pos + 2, y_pos + 2), line, fill=(0, 0, 0, 180), font=font)
+            # Draw main text
+            draw.text((x_pos, y_pos), line, fill=(255, 255, 255), font=font)
 
-            draw.text(position, text, fill=(255, 255, 255), font=font)
-        except Exception as e:
-            self.logger.warning(f"Could not add text to placeholder: {e}")
-
-        image.save(output_path, "PNG")
+        image.save(output_path, "PNG", quality=95)
 
     def _compose_video(
         self,
@@ -443,22 +534,46 @@ class VideoRenderer:
         # Load audio to get duration
         audio_clip = AudioFileClip(str(audio_path))
         audio_duration = audio_clip.duration
-        self.logger.info(f"Audio duration: {audio_duration:.2f} seconds")
+        target_duration = video_plan.duration_target_seconds
+        self.logger.info(f"Audio duration: {audio_duration:.2f} seconds, target: {target_duration}s")
+
+        # If audio is shorter than target, extend it to match target duration
+        # This ensures the video matches the requested length
+        if audio_duration < target_duration * 0.9:  # If audio is < 90% of target
+            # Loop audio to fill target duration
+            loops_needed = int(target_duration / audio_duration) + 1
+            audio_clips = [audio_clip] * loops_needed
+            from moviepy.editor import concatenate_audioclips
+            extended_audio = concatenate_audioclips(audio_clips)
+            # Trim to exact target duration
+            audio_clip = extended_audio.subclip(0, target_duration)
+            self.logger.info(f"Extending audio from {audio_duration:.2f}s to {target_duration}s (looped {loops_needed}x and trimmed)")
+            final_audio_duration = target_duration
+        elif audio_duration > target_duration * 1.1:  # If audio is > 110% of target
+            # Trim audio to match target
+            audio_clip = audio_clip.subclip(0, target_duration)
+            self.logger.info(f"Trimming audio from {audio_duration:.2f}s to {target_duration}s")
+            final_audio_duration = target_duration
+        else:
+            # Use audio duration as-is (close enough to target, ±10%)
+            final_audio_duration = audio_duration
+            self.logger.info(f"Audio duration ({audio_duration:.2f}s) is close to target ({target_duration}s), using as-is")
 
         # Calculate duration per scene based on narration lines
         total_narration_lines = sum(len(scene.narration) for scene in video_plan.scenes)
         if total_narration_lines == 0:
             # Fallback: equal duration per scene
-            duration_per_scene = audio_duration / len(scene_visuals)
+            duration_per_scene = final_audio_duration / len(scene_visuals)
+            scene_durations = [duration_per_scene] * len(scene_visuals)
         else:
             # Weight by narration lines per scene
             scene_durations = []
             for scene in video_plan.scenes:
                 scene_narration_count = len(scene.narration)
                 if scene_narration_count > 0:
-                    scene_durations.append((scene_narration_count / total_narration_lines) * audio_duration)
+                    scene_durations.append((scene_narration_count / total_narration_lines) * final_audio_duration)
                 else:
-                    scene_durations.append(audio_duration / len(video_plan.scenes))
+                    scene_durations.append(final_audio_duration / len(video_plan.scenes))
 
         # Build timeline: collect all clips (scene visuals + talking-head clips)
         video_clips = []
@@ -584,5 +699,5 @@ class VideoRenderer:
         audio_clip.close()
 
         self.logger.info(f"Successfully created video: {output_path}")
-        self.logger.info(f"Video duration: {audio_duration:.2f} seconds")
+        self.logger.info(f"Video duration: {final_audio_duration:.2f} seconds (target: {target_duration}s)")
 

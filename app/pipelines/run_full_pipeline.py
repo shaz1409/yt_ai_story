@@ -9,6 +9,7 @@ from app.core.config import Settings, settings
 from app.core.logging_config import get_logger, setup_logging
 from app.services.character_engine import CharacterEngine
 from app.services.dialogue_engine import DialogueEngine
+from app.services.metadata_generator import MetadataGenerator
 from app.services.narration_engine import NarrationEngine
 from app.services.story_finder import StoryFinder
 from app.services.story_rewriter import StoryRewriter
@@ -112,129 +113,53 @@ def generate_story_episode(
     return episode_id, video_plan
 
 
-def _generate_clickable_title(video_plan: Any, template: Optional[str] = None) -> str:
-    """
-    Generate clickable YouTube title with viral hooks.
-
-    Args:
-        video_plan: VideoPlan object
-        template: Optional custom template (e.g., "[SHOCKING] {title}")
-
-    Returns:
-        Clickable title (max 100 chars)
-    """
-    base_title = video_plan.title or video_plan.topic
-
-    if template:
-        # Use custom template
-        try:
-            title = template.format(title=base_title, topic=video_plan.topic, logline=video_plan.logline)
-        except KeyError:
-            title = base_title
-    else:
-        # Default templates based on style
-        style = video_plan.style.lower()
-        if style == "ragebait":
-            title = f"[SHOCKING] {base_title} - You Won't Believe This!"
-        elif style == "relationship_drama":
-            title = f"{base_title} - This Will Break Your Heart"
-        else:  # courtroom_drama
-            title = f"[SHOCKING] {base_title} - The Verdict Will Shock You"
-
-    # Ensure under 100 characters
-    if len(title) > 100:
-        title = title[:97] + "..."
-
-    return title
-
-
-def _generate_hashtags(video_plan: Any, max_tags: int = 10) -> list[str]:
-    """
-    Generate relevant hashtags from VideoPlan.
-
-    Args:
-        video_plan: VideoPlan object
-        max_tags: Maximum number of tags
-
-    Returns:
-        List of hashtag strings
-    """
-    tags = []
-
-    # Style-based tags
-    style = video_plan.style.lower()
-    if "courtroom" in style:
-        tags.extend(["#courtroom", "#justice", "#legal", "#drama", "#verdict"])
-    elif "ragebait" in style:
-        tags.extend(["#ragebait", "#shocking", "#drama", "#viral"])
-    elif "relationship" in style:
-        tags.extend(["#relationship", "#drama", "#emotional", "#story"])
-
-    # Topic-based tags
-    topic_lower = video_plan.topic.lower()
-    if "teen" in topic_lower or "young" in topic_lower:
-        tags.append("#teen")
-    if "judge" in topic_lower or "court" in topic_lower:
-        tags.extend(["#judge", "#court"])
-    if "laugh" in topic_lower or "reaction" in topic_lower:
-        tags.append("#reaction")
-    if "karma" in topic_lower or "consequences" in topic_lower:
-        tags.append("#karma")
-
-    # Universal tags
-    tags.extend(["#shorts", "#story", "#drama"])
-
-    # Remove duplicates and limit
-    unique_tags = list(dict.fromkeys(tags))  # Preserves order
-    return unique_tags[:max_tags]
+# Legacy helper functions removed - now using MetadataGenerator service
 
 
 def generate_video_metadata(
-    video_plan: Any, title_template: Optional[str] = None, description_template: Optional[str] = None
-) -> tuple[str, str, list[str]]:
+    video_plan: Any,
+    settings: Settings,
+    logger: Any,
+    title_template: Optional[str] = None,
+    description_template: Optional[str] = None,
+) -> tuple[str, str, list[str], str]:
     """
-    Generate YouTube metadata from VideoPlan with clickable titles and hashtags.
+    Generate YouTube metadata from VideoPlan using MetadataGenerator.
 
     Args:
         video_plan: VideoPlan object
-        title_template: Optional custom title template
-        description_template: Optional custom description template
+        settings: Application settings
+        logger: Logger instance
+        title_template: Optional custom title template (overrides LLM)
+        description_template: Optional custom description template (overrides LLM)
 
     Returns:
-        Tuple of (title, description, tags)
+        Tuple of (title, description, tags, hook_line)
     """
-    # Generate clickable title
-    title = _generate_clickable_title(video_plan, title_template)
+    metadata_gen = MetadataGenerator(settings, logger)
+    metadata = metadata_gen.generate_metadata(video_plan)
 
-    # Generate hashtags
-    hashtags = _generate_hashtags(video_plan)
-
-    # Build description
-    if description_template:
+    # Apply custom templates if provided (override LLM output)
+    if title_template:
         try:
-            description = description_template.format(
-                logline=video_plan.logline or "",
-                title=video_plan.title or "",
-                topic=video_plan.topic,
-                hashtags=" ".join(hashtags),
+            metadata.title = title_template.format(
+                title=metadata.title, topic=video_plan.topic, logline=video_plan.logline
             )
         except KeyError:
-            description = video_plan.logline or ""
-    else:
-        # Default description format
-        description_parts = [
-            video_plan.logline or f"A dramatic story about {video_plan.topic}",
-            "",
-            " ".join(hashtags),
-            "",
-            f"Episode: {video_plan.episode_id}",
-        ]
-        description = "\n".join(description_parts)
+            pass  # Use LLM title if template fails
 
-    # Tags for YouTube API (without #)
-    tags = [tag.replace("#", "") for tag in hashtags if tag.startswith("#")]
+    if description_template:
+        try:
+            metadata.description = description_template.format(
+                logline=video_plan.logline or "",
+                title=metadata.title,
+                topic=video_plan.topic,
+                hashtags=" ".join([f"#{tag}" for tag in metadata.tags]),
+            )
+        except KeyError:
+            pass  # Use LLM description if template fails
 
-    return title, description, tags
+    return metadata.title, metadata.description, metadata.tags, metadata.hook_line
 
 
 def main():
@@ -274,9 +199,14 @@ def main():
         help="Target video duration in seconds (default: 60)",
     )
     parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Preview mode: generate and render video but do not upload to YouTube",
+    )
+    parser.add_argument(
         "--auto-upload",
         action="store_true",
-        help="Automatically upload video to YouTube after rendering",
+        help="Automatically upload video to YouTube after rendering (requires explicit flag)",
     )
     parser.add_argument(
         "--output-dir",
@@ -314,8 +244,18 @@ def main():
         default=None,
         help="Maximum number of dialogue lines to animate (default: 3)",
     )
+    parser.add_argument(
+        "--batch-count",
+        type=int,
+        default=1,
+        help="Number of videos to generate in batch (default: 1, sequential)",
+    )
 
     args = parser.parse_args()
+
+    # Validate mutually exclusive flags
+    if args.preview and args.auto_upload:
+        parser.error("--preview and --auto-upload are mutually exclusive. Use --preview to generate without upload.")
 
     # Validate arguments
     if not args.auto_topic and not args.topic:
@@ -334,7 +274,13 @@ def main():
         logger.info(f"Topic: {args.topic}")
     logger.info(f"Style: {args.style}")
     logger.info(f"Duration: {args.duration_target_seconds}s")
-    logger.info(f"Auto-upload: {args.auto_upload}")
+    logger.info(f"Batch count: {args.batch_count}")
+    if args.preview:
+        logger.info("Mode: PREVIEW (no upload)")
+    elif args.auto_upload:
+        logger.info("Mode: AUTO-UPLOAD (will upload to YouTube)")
+    else:
+        logger.info("Mode: GENERATE ONLY (no upload)")
     logger.info("=" * 60)
 
     try:
@@ -347,110 +293,165 @@ def main():
         # Initialize repository
         repository = EpisodeRepository(settings, logger)
 
-        # Phase 0: Auto-select story if requested
-        selected_topic = args.topic
-        selected_story_text = None
-        selected_story_title = None
+        # Batch processing loop
+        batch_success = 0
+        batch_failed = 0
+        batch_results = []
 
-        if args.auto_topic:
+        for batch_item in range(1, args.batch_count + 1):
+            if args.batch_count > 1:
+                logger.info("=" * 60)
+                logger.info(f"=== BATCH ITEM {batch_item}/{args.batch_count} ===")
+                logger.info("=" * 60)
+
+            try:
+                # Phase 0: Auto-select story if requested
+                selected_topic = args.topic
+                selected_story_text = None
+                selected_story_title = None
+
+                if args.auto_topic:
+                    logger.info("=" * 60)
+                    logger.info("PHASE 0: Story Sourcing & Virality Scoring")
+                    logger.info("=" * 60)
+
+                    story_source = StorySourceService(settings, logger)
+                    virality_scorer = ViralityScorer(settings, logger)
+
+                    # Generate candidates
+                    logger.info(f"Generating {args.num_candidates} candidates for niche: {args.niche}")
+                    candidates = story_source.generate_candidates_for_niche(niche=args.niche, num_candidates=args.num_candidates)
+
+                    # Score and rank
+                    logger.info("Scoring candidates for virality...")
+                    ranked = virality_scorer.rank_candidates(candidates)
+
+                    # Select top candidate
+                    top_candidate, top_score = ranked[0]
+                    selected_story_text = top_candidate.raw_text
+                    selected_story_title = top_candidate.title
+                    selected_topic = top_candidate.title  # Use title as topic for metadata
+
+                    logger.info("=" * 60)
+                    logger.info("SELECTED CANDIDATE:")
+                    logger.info(f"  ID: {top_candidate.id}")
+                    logger.info(f"  Title: {top_candidate.title}")
+                    logger.info(f"  Overall Score: {top_score.overall_score:.3f}")
+                    logger.info(f"  Breakdown: shock={top_score.shock:.2f}, rage={top_score.rage:.2f}, "
+                               f"injustice={top_score.injustice:.2f}, relatability={top_score.relatability:.2f}, "
+                               f"twist={top_score.twist_strength:.2f}, clarity={top_score.clarity:.2f}")
+                    logger.info("=" * 60)
+
+                    # Log top 3 for reference
+                    logger.info("Top 3 candidates:")
+                    for i, (candidate, score) in enumerate(ranked[:3], 1):
+                        logger.info(f"  {i}. {candidate.title[:60]}... (score: {score.overall_score:.3f})")
+
+                # Step 1: Generate story episode
+                logger.info("=" * 60)
+                logger.info("PHASE 1: Story Generation")
+                logger.info("=" * 60)
+                episode_id, video_plan = generate_story_episode(
+                    selected_topic,
+                    args.duration_target_seconds,
+                    settings,
+                    logger,
+                    repository,
+                    style=args.style,
+                    raw_story_text=selected_story_text,
+                    raw_story_title=selected_story_title,
+                )
+
+                # Step 2: Render video
+                logger.info("=" * 60)
+                logger.info("PHASE 2: Video Rendering")
+                logger.info("=" * 60)
+                
+                # Organize output directory
+                if args.preview:
+                    output_base = Path(args.output_dir) / "preview"
+                else:
+                    output_base = Path(args.output_dir) / "videos"
+                
+                # Create episode-specific subdirectory
+                from app.utils.io_utils import slugify
+                topic_slug = slugify(selected_topic or video_plan.title)
+                episode_output_dir = output_base / f"{episode_id}_{topic_slug}"
+                
+                video_renderer = VideoRenderer(settings, logger)
+                video_path = video_renderer.render(video_plan, episode_output_dir)
+
+                logger.info(f"Video rendered: {video_path}")
+
+                # Step 3: Upload to YouTube (only if --auto-upload and not --preview)
+                youtube_url = None
+                should_upload = args.auto_upload and not args.preview
+                
+                if should_upload:
+                    logger.info("=" * 60)
+                    logger.info("PHASE 3: YouTube Upload")
+                    logger.info("=" * 60)
+
+                    title, description, tags, hook_line = generate_video_metadata(
+                        video_plan,
+                        settings,
+                        logger,
+                        title_template=args.title_template,
+                        description_template=args.description_template,
+                    )
+                    
+                    if hook_line:
+                        logger.info(f"Generated hook line: {hook_line}")
+
+                    uploader = YouTubeUploader(settings, logger)
+                    youtube_url = uploader.upload(
+                        video_path=video_path,
+                        title=title,
+                        description=description,
+                        tags=tags,
+                        privacy_status="public",
+                    )
+                elif args.preview:
+                    logger.info("=" * 60)
+                    logger.info("PREVIEW MODE - No upload performed")
+                    logger.info("=" * 60)
+
+                # Summary for this batch item
+                logger.info("=" * 60)
+                logger.info(f"PIPELINE COMPLETE{' (Batch ' + str(batch_item) + '/' + str(args.batch_count) + ')' if args.batch_count > 1 else ''}!")
+                logger.info("=" * 60)
+                logger.info(f"Episode ID: {episode_id}")
+                logger.info(f"Video: {video_path.absolute()}")
+                if youtube_url:
+                    logger.info(f"YouTube URL: {youtube_url}")
+                elif args.preview:
+                    logger.info("PREVIEW MODE - Video generated but not uploaded")
+                logger.info("=" * 60)
+
+                batch_success += 1
+                batch_results.append({"episode_id": episode_id, "video_path": video_path, "youtube_url": youtube_url})
+
+            except Exception as e:
+                batch_failed += 1
+                logger.error(f"Batch item {batch_item} failed: {e}", exc_info=True)
+                if args.batch_count > 1:
+                    logger.warning(f"Continuing with next batch item...")
+                else:
+                    # If single run, re-raise
+                    raise
+
+        # Final batch summary
+        if args.batch_count > 1:
             logger.info("=" * 60)
-            logger.info("PHASE 0: Story Sourcing & Virality Scoring")
+            logger.info("BATCH COMPLETE!")
             logger.info("=" * 60)
-
-            story_source = StorySourceService(settings, logger)
-            virality_scorer = ViralityScorer(settings, logger)
-
-            # Generate candidates
-            logger.info(f"Generating {args.num_candidates} candidates for niche: {args.niche}")
-            candidates = story_source.generate_candidates_for_niche(niche=args.niche, num_candidates=args.num_candidates)
-
-            # Score and rank
-            logger.info("Scoring candidates for virality...")
-            ranked = virality_scorer.rank_candidates(candidates)
-
-            # Select top candidate
-            top_candidate, top_score = ranked[0]
-            selected_story_text = top_candidate.raw_text
-            selected_story_title = top_candidate.title
-            selected_topic = top_candidate.title  # Use title as topic for metadata
-
+            logger.info(f"Success: {batch_success}/{args.batch_count}")
+            logger.info(f"Failed: {batch_failed}/{args.batch_count}")
             logger.info("=" * 60)
-            logger.info("SELECTED CANDIDATE:")
-            logger.info(f"  ID: {top_candidate.id}")
-            logger.info(f"  Title: {top_candidate.title}")
-            logger.info(f"  Overall Score: {top_score.overall_score:.3f}")
-            logger.info(f"  Breakdown: shock={top_score.shock:.2f}, rage={top_score.rage:.2f}, "
-                       f"injustice={top_score.injustice:.2f}, relatability={top_score.relatability:.2f}, "
-                       f"twist={top_score.twist_strength:.2f}, clarity={top_score.clarity:.2f}")
-            logger.info("=" * 60)
-
-            # Log top 3 for reference
-            logger.info("Top 3 candidates:")
-            for i, (candidate, score) in enumerate(ranked[:3], 1):
-                logger.info(f"  {i}. {candidate.title[:60]}... (score: {score.overall_score:.3f})")
-
-        # Step 1: Generate story episode
-        logger.info("=" * 60)
-        logger.info("PHASE 1: Story Generation")
-        logger.info("=" * 60)
-        episode_id, video_plan = generate_story_episode(
-            selected_topic,
-            args.duration_target_seconds,
-            settings,
-            logger,
-            repository,
-            style=args.style,
-            raw_story_text=selected_story_text,
-            raw_story_title=selected_story_title,
-        )
-
-        # Step 2: Render video
-        logger.info("=" * 60)
-        logger.info("PHASE 2: Video Rendering")
-        logger.info("=" * 60)
-        output_dir = Path(args.output_dir)
-        video_renderer = VideoRenderer(settings, logger)
-        video_path = video_renderer.render(video_plan, output_dir)
-
-        logger.info(f"Video rendered: {video_path}")
-
-        # Step 3: Upload to YouTube (if requested)
-        youtube_url = None
-        if args.auto_upload:
-            logger.info("=" * 60)
-            logger.info("PHASE 3: YouTube Upload")
-            logger.info("=" * 60)
-
-            title, description, tags = generate_video_metadata(
-                video_plan, title_template=args.title_template, description_template=args.description_template
-            )
-
-            uploader = YouTubeUploader(settings, logger)
-            youtube_url = uploader.upload(
-                video_path=video_path,
-                title=title,
-                description=description,
-                tags=tags,
-                privacy_status="public",
-            )
-
-        # Summary
-        logger.info("=" * 60)
-        logger.info("PIPELINE COMPLETE!")
-        logger.info("=" * 60)
-        logger.info(f"Episode ID: {episode_id}")
-        logger.info(f"Video: {video_path}")
-        if youtube_url:
-            logger.info(f"YouTube URL: {youtube_url}")
-
-        logger.info("\n" + "=" * 60)
-        logger.info("✅ Pipeline Complete!")
-        logger.info("=" * 60)
-        logger.info(f"Episode ID: {episode_id}")
-        logger.info(f"Video: {video_path.absolute()}")
-        if youtube_url:
-            logger.info(f"YouTube: {youtube_url}")
-        logger.info("=" * 60)
+            for i, result in enumerate(batch_results, 1):
+                logger.info(f"{i}. {result['episode_id']}: {result['video_path'].name}")
+                if result.get("youtube_url"):
+                    logger.info(f"   YouTube: {result['youtube_url']}")
 
         return 0
 

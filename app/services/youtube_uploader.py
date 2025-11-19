@@ -59,46 +59,67 @@ class YouTubeUploader:
         self.logger.info(f"Privacy: {privacy_status}")
         self.logger.info("=" * 60)
 
-        try:
-            youtube = self._get_youtube_service()
+        # Retry logic for upload
+        max_retries = 3
+        retry_delays = [2, 5, 10]  # seconds
+        last_error = None
 
-            # Prepare video metadata
-            body = {
-                "snippet": {
-                    "title": title,
-                    "description": description,
-                    "tags": tags or [],
-                    "categoryId": category_id,
-                },
-                "status": {
-                    "privacyStatus": privacy_status,
-                },
-            }
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Sleep before retry (except first attempt)
+                if attempt > 1:
+                    import time
+                    delay = retry_delays[min(attempt - 2, len(retry_delays) - 1)]
+                    self.logger.info(f"Waiting {delay}s before retry attempt {attempt}/{max_retries}...")
+                    time.sleep(delay)
 
-            # Upload video
-            self.logger.info("Uploading video to YouTube...")
-            insert_request = youtube.videos().insert(
-                part=",".join(body.keys()),
-                body=body,
-                media_body=youtube.MediaFileUpload(str(video_path), chunksize=-1, resumable=True),
-            )
+                youtube = self._get_youtube_service()
 
-            response = self._resumable_upload(insert_request)
+                # Prepare video metadata
+                body = {
+                    "snippet": {
+                        "title": title,
+                        "description": description,
+                        "tags": tags or [],
+                        "categoryId": category_id,
+                    },
+                    "status": {
+                        "privacyStatus": privacy_status,
+                    },
+                }
 
-            video_id = response["id"]
-            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                # Upload video
+                if attempt > 1:
+                    self.logger.info(f"Retry attempt {attempt}/{max_retries} for YouTube upload...")
+                else:
+                    self.logger.info("Uploading video to YouTube...")
+                insert_request = youtube.videos().insert(
+                    part=",".join(body.keys()),
+                    body=body,
+                    media_body=youtube.MediaFileUpload(str(video_path), chunksize=-1, resumable=True),
+                )
 
-            self.logger.info("=" * 60)
-            self.logger.info("YouTube upload complete!")
-            self.logger.info(f"Video ID: {video_id}")
-            self.logger.info(f"Video URL: {video_url}")
-            self.logger.info("=" * 60)
+                response = self._resumable_upload(insert_request)
 
-            return video_url
+                video_id = response["id"]
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
 
-        except Exception as e:
-            self.logger.error(f"YouTube upload failed: {e}", exc_info=True)
-            raise
+                self.logger.info("=" * 60)
+                self.logger.info("YouTube upload complete!")
+                self.logger.info(f"Video ID: {video_id}")
+                self.logger.info(f"Video URL: {video_url}")
+                self.logger.info("=" * 60)
+
+                return video_url
+
+            except Exception as e:
+                last_error = e
+                self.logger.warning(f"YouTube upload attempt {attempt}/{max_retries} failed: {e}")
+                if attempt < max_retries:
+                    continue
+                else:
+                    self.logger.error(f"YouTube upload failed after {max_retries} attempts: {e}", exc_info=True)
+                    raise
 
     def _get_youtube_service(self):
         """Get authenticated YouTube service."""

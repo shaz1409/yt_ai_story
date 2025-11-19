@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     huggingface_token: Optional[str] = Field(
         default=None, description="Hugging Face token for image generation (optional, improves rate limits)"
     )
+    hf_image_model_primary: Optional[str] = Field(
+        default=None,
+        description="Primary Hugging Face image model to try first (overrides default list, set via HF_IMAGE_MODEL_PRIMARY env var)",
+    )
+    hf_image_models: list[str] = Field(
+        default_factory=lambda: [
+            "stabilityai/stable-diffusion-xl-base-1.0",
+            "stabilityai/sdxl-turbo",
+            "runwayml/stable-diffusion-v1-5",  # Fallback option
+        ],
+        description="List of Hugging Face image models to try in order (fallback if primary fails). Note: Some models may return 410 (Gone) if they no longer support Inference API.",
+    )
 
     # ========================================================================
     # Video Rendering & Talking Heads
@@ -97,8 +109,11 @@ class Settings(BaseSettings):
     # ========================================================================
     use_llm_for_rewriter: bool = Field(default=False, description="Use LLM for story rewriting")
     use_llm_for_characters: bool = Field(default=False, description="Use LLM for character generation")
-    use_llm_for_dialogue: bool = Field(default=False, description="Use LLM for dialogue generation")
+    use_llm_for_dialogue: bool = Field(default=True, description="Use LLM for dialogue generation (default: true)")
     use_llm_for_narration: bool = Field(default=False, description="Use LLM for narration generation")
+    use_llm_for_metadata: bool = Field(default=True, description="Use LLM for metadata generation (titles, descriptions) (default: true)")
+    dialogue_model: str = Field(default="gpt-4o-mini", description="LLM model for dialogue and metadata generation")
+    max_dialogue_lines_per_scene: int = Field(default=2, description="Maximum dialogue lines per scene (default: 2)")
 
     # ========================================================================
     # Storage Settings

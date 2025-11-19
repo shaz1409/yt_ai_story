@@ -1,0 +1,200 @@
+{
+  "episode_id": "episode_6e58e34d58cc",
+  "topic": "teen laughs in court after verdict",
+  "duration_target_seconds": 60,
+  "style": "courtroom_drama",
+  "title": "teen laughs in court after verdict - Breaking News",
+  "logline": "A dramatic courtroom story about teen laughs in court after verdict - breaking news with an unexpected twist.",
+  "characters": [
+    {
+      "id": "judge_d48911bb",
+      "role": "judge",
+      "name": "Judge Smith",
+      "appearance": {
+        "age_range": "50-70",
+        "gender": "any",
+        "formality": "high",
+        "unique_id": "cbe25707"
+      },
+      "personality": "authoritative, stern, fair, experienced",
+      "voice_profile": "deep authoritative"
+    },
+    {
+      "id": "defendant_787545b6",
+      "role": "defendant",
+      "name": "Jordan Johnson",
+      "appearance": {
+        "age_range": "18-40",
+        "gender": "any",
+        "formality": "low",
+        "unique_id": "bdf77b35"
+      },
+      "personality": "nervous, defensive, emotional, anxious",
+      "voice_profile": "nervous"
+    },
+    {
+      "id": "lawyer_45d45a18",
+      "role": "lawyer",
+      "name": "Attorney Williams",
+      "appearance": {
+        "age_range": "30-60",
+        "gender": "any",
+        "formality": "high",
+        "unique_id": "e4a0b11a"
+      },
+      "personality": "confident, articulate, strategic, persuasive",
+      "voice_profile": "persuasive"
+    },
+    {
+      "id": "narrator_e10b8966",
+      "role": "narrator",
+      "name": "Morgan Brown",
+      "appearance": {
+        "unique_id": "3429a50a"
+      },
+      "personality": "neutral, clear, engaging",
+      "voice_profile": "clear neutral"
+    }
+  ],
+  "scenes": [
+    {
+      "scene_id": 1,
+      "description": "Extreme Close-Up of In a dramatic turn of events related to teen laughs. Shocking, Tense atmosphere. harsh fluorescent courtroom lighting. Courtroom Drama setting, cinematic framing, ultra-detailed.",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. Extreme Close-Up of In a dramatic turn of events related to teen laughs. Shocking, Tense atmosphere.",
+      "camera_style": "wide_shot",
+      "narration": [
+        {
+          "text": "In a dramatic turn of events related to teen laughs",
+          "emotion": "dramatic",
+          "scene_id": 1
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "judge_d48911bb",
+          "text": "Mr. Johnson, your laughter may have cost someone their future. Explain yourself.",
+          "emotion": "stern",
+          "scene_id": 1,
+          "approx_timing_hint": 5.0
+        },
+        {
+          "character_id": "defendant_787545b6",
+          "text": "I didn't mean to! It was just a joke… I just wanted everyone to laugh!",
+          "emotion": "nervous",
+          "scene_id": 1,
+          "approx_timing_hint": 8.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: Extreme Close-Up of In a dramatic turn of events r",
+        "Detail shot related to Extreme Close-Up of In a drama"
+      ]
+    },
+    {
+      "scene_id": 2,
+      "description": "Medium Shot of in court after verdict, the situation unfolded with unexpected consequences. Wit. Building Tension, Ominous atmosphere. harsh fluorescent courtroom lighting. Courtroom Drama setting, cinematic framing, ultra-detailed.",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. Medium Shot of in court after verdict, the situation unfolded with unexpected consequences. Wit. Bui",
+      "camera_style": "medium_shot",
+      "narration": [
+        {
+          "text": "in court after verdict, the situation unfolded with unexpected consequences",
+          "emotion": "dramatic",
+          "scene_id": 2
+        },
+        {
+          "text": "Witnesses",
+          "emotion": "dramatic",
+          "scene_id": 2
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "judge_d48911bb",
+          "text": "Mr. Johnson, your fate now rests in the shadows of your own choices—do you truly understand the weight of this verdict?",
+          "emotion": "stern",
+          "scene_id": 2,
+          "approx_timing_hint": 5.0
+        },
+        {
+          "character_id": "defendant_787545b6",
+          "text": "You don’t get it! I was trying to survive! Doesn’t that count for something?",
+          "emotion": "nervous",
+          "scene_id": 2,
+          "approx_timing_hint": 8.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: Medium Shot of in court after verdict, the situati",
+        "Detail shot related to Medium Shot of in court after "
+      ]
+    },
+    {
+      "scene_id": 3,
+      "description": "Dramatic Close-Up of and emotional. The story has. Dramatic, Unexpected atmosphere. harsh fluorescent courtroom lighting. Courtroom Drama setting, cinematic framing, ultra-detailed.",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. Dramatic Close-Up of and emotional. The story has. Dramatic, Unexpected atmosphere. harsh fluorescen",
+      "camera_style": "medium_shot",
+      "narration": [
+        {
+          "text": "and emotional The story has",
+          "emotion": "emotional",
+          "scene_id": 3
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "judge_d48911bb",
+          "text": "The truth is non-negotiable, Mr. Johnson. Are you prepared to face it?",
+          "emotion": "stern",
+          "scene_id": 3,
+          "approx_timing_hint": 5.0
+        },
+        {
+          "character_id": "defendant_787545b6",
+          "text": "I didn’t do it! You have to believe me—this is a setup!",
+          "emotion": "defensive",
+          "scene_id": 3,
+          "approx_timing_hint": 8.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: Dramatic Close-Up of and emotional. The story has.",
+        "Detail shot related to Dramatic Close-Up of and emoti"
+      ]
+    },
+    {
+      "scene_id": 4,
+      "description": "Wide Shot of captured public attention due to its compelling narrative and dramatic elements.. Satisfying, Conclusive atmosphere. harsh fluorescent courtroom lighting. Courtroom Drama setting, cinematic framing, ultra-detailed.",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. Wide Shot of captured public attention due to its compelling narrative and dramatic elements.. Satis",
+      "camera_style": "close_up",
+      "narration": [
+        {
+          "text": "captured public attention due to its compelling narrative and dramatic elements",
+          "emotion": "dramatic",
+          "scene_id": 4
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "judge_d48911bb",
+          "text": "I will not tolerate games in my courtroom, Mr. Johnson. This is your last chance to be truthful.",
+          "emotion": "stern",
+          "scene_id": 4,
+          "approx_timing_hint": 5.0
+        },
+        {
+          "character_id": "defendant_787545b6",
+          "text": "You don’t understand! I had no choice—everybody’s against me!",
+          "emotion": "defensive",
+          "scene_id": 4,
+          "approx_timing_hint": 8.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: Wide Shot of captured public attention due to its ",
+        "Detail shot related to Wide Shot of captured public a"
+      ]
+    }
+  ],
+  "created_at": "2025-11-19T22:11:43.901438",
+  "version": "1.0"
+}

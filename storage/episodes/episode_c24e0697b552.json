@@ -1,0 +1,235 @@
+{
+  "episode_id": "episode_c24e0697b552",
+  "topic": "teen laughs in court after verdict",
+  "duration_target_seconds": 60,
+  "style": "courtroom_drama",
+  "title": "teen laughs in court after verdict - Breaking News",
+  "logline": "A dramatic courtroom story about teen laughs in court after verdict - breaking news with an unexpected twist.",
+  "characters": [
+    {
+      "id": "judge_765e8613",
+      "role": "judge",
+      "name": "Judge Smith",
+      "appearance": {
+        "age_range": "50-70",
+        "gender": "any",
+        "formality": "high",
+        "unique_id": "7a754c43"
+      },
+      "personality": "authoritative, stern, fair, experienced",
+      "voice_profile": "deep authoritative"
+    },
+    {
+      "id": "defendant_fcc6c65f",
+      "role": "defendant",
+      "name": "Jordan Johnson",
+      "appearance": {
+        "age_range": "18-40",
+        "gender": "any",
+        "formality": "low",
+        "unique_id": "2b34c280"
+      },
+      "personality": "nervous, defensive, emotional, anxious",
+      "voice_profile": "nervous"
+    },
+    {
+      "id": "lawyer_0d049e8f",
+      "role": "lawyer",
+      "name": "Attorney Williams",
+      "appearance": {
+        "age_range": "30-60",
+        "gender": "any",
+        "formality": "high",
+        "unique_id": "9ac6e89e"
+      },
+      "personality": "confident, articulate, strategic, persuasive",
+      "voice_profile": "persuasive"
+    },
+    {
+      "id": "narrator_ffc77083",
+      "role": "narrator",
+      "name": "Morgan Brown",
+      "appearance": {
+        "unique_id": "a30c065c"
+      },
+      "personality": "neutral, clear, engaging",
+      "voice_profile": "clear neutral"
+    }
+  ],
+  "scenes": [
+    {
+      "scene_id": 1,
+      "description": "Extreme Close-Up of In a dramatic turn of events related to teen laughs. Shocking, Tense atmosphere. harsh fluorescent courtroom lighting. Courtroom Drama setting, cinematic framing, ultra-detailed.",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. Extreme Close-Up of In a dramatic turn of events related to teen laughs. Shocking, Tense atmosphere.",
+      "camera_style": "wide_shot",
+      "narration": [
+        {
+          "text": "The judge’s gavel slams, but the arrogant teen smirks",
+          "emotion": "dramatic",
+          "scene_id": 1
+        },
+        {
+          "text": "Laughter echoes in the courtroom Unbelievable Justice falters Cold eyes meet shocked faces",
+          "emotion": "satisfying",
+          "scene_id": 1
+        },
+        {
+          "text": "Victims whisper, “How can this be ” The scales tremble",
+          "emotion": "dramatic",
+          "scene_id": 1
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "judge_765e8613",
+          "text": "You think this is a joke? Your actions have consequences, and they start here.",
+          "emotion": "stern",
+          "scene_id": 1,
+          "approx_timing_hint": 5.0
+        },
+        {
+          "character_id": "defendant_fcc6c65f",
+          "text": "Whatever, it’s just a stupid prank! Why is everyone acting like I’m a criminal?",
+          "emotion": "defensive",
+          "scene_id": 1,
+          "approx_timing_hint": 8.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: Extreme Close-Up of In a dramatic turn of events r",
+        "Detail shot related to Extreme Close-Up of In a drama"
+      ]
+    },
+    {
+      "scene_id": 2,
+      "description": "Medium Shot of in court after verdict, the situation unfolded with unexpected consequences. Wit. Building Tension, Ominous atmosphere. harsh fluorescent courtroom lighting. Courtroom Drama setting, cinematic framing, ultra-detailed.",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. Medium Shot of in court after verdict, the situation unfolded with unexpected consequences. Wit. Bui",
+      "camera_style": "medium_shot",
+      "narration": [
+        {
+          "text": "The arrogant teen smirked, reveling in his power",
+          "emotion": "dramatic",
+          "scene_id": 2
+        },
+        {
+          "text": "But beneath that bravado, vulnerability simmered, waiting to explode",
+          "emotion": "dramatic",
+          "scene_id": 2
+        },
+        {
+          "text": "Laughter erupted in the courtroom A cold judge glared Justice teetered precariously Witnesses gasped",
+          "emotion": "satisfying",
+          "scene_id": 2
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "judge_765e8613",
+          "text": "You think this is a game, Mr. Johnson? Your arrogance has consequences.",
+          "emotion": "stern",
+          "scene_id": 2,
+          "approx_timing_hint": 5.0
+        },
+        {
+          "character_id": "defendant_fcc6c65f",
+          "text": "Consequences? This is a joke! You’re all just mad I didn’t bow down!",
+          "emotion": "defensive",
+          "scene_id": 2,
+          "approx_timing_hint": 8.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: Medium Shot of in court after verdict, the situati",
+        "Detail shot related to Medium Shot of in court after "
+      ]
+    },
+    {
+      "scene_id": 3,
+      "description": "Dramatic Close-Up of and emotional. The story has. Dramatic, Unexpected atmosphere. harsh fluorescent courtroom lighting. Courtroom Drama setting, cinematic framing, ultra-detailed.",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. Dramatic Close-Up of and emotional. The story has. Dramatic, Unexpected atmosphere. harsh fluorescen",
+      "camera_style": "medium_shot",
+      "narration": [
+        {
+          "text": "Laughter echoes through the courtroom Shock grips the audience The judge’s gavel strikes down",
+          "emotion": "dramatic",
+          "scene_id": 3
+        },
+        {
+          "text": "“Enough ” Silence follows Suddenly, a secret document reveals the truth Innocence shattered",
+          "emotion": "dramatic",
+          "scene_id": 3
+        },
+        {
+          "text": "The real villain Justice itself",
+          "emotion": "satisfying",
+          "scene_id": 3
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "defendant_fcc6c65f",
+          "text": "This can't be happening!",
+          "emotion": "shocked",
+          "scene_id": 3,
+          "approx_timing_hint": 5.0
+        },
+        {
+          "character_id": "judge_765e8613",
+          "text": "The court has reached a decision.",
+          "emotion": "stern",
+          "scene_id": 3,
+          "approx_timing_hint": 8.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: Dramatic Close-Up of and emotional. The story has.",
+        "Detail shot related to Dramatic Close-Up of and emoti"
+      ]
+    },
+    {
+      "scene_id": 4,
+      "description": "Wide Shot of captured public attention due to its compelling narrative and dramatic elements.. Satisfying, Conclusive atmosphere. harsh fluorescent courtroom lighting. Courtroom Drama setting, cinematic framing, ultra-detailed.",
+      "background_prompt": "A professional courtroom setting with wooden benches, judge's bench, witness stand, American flag, formal atmosphere. Wide Shot of captured public attention due to its compelling narrative and dramatic elements.. Satis",
+      "camera_style": "close_up",
+      "narration": [
+        {
+          "text": "Laughter fills the courtroom A teen smirks, defiant The judge's gavel slams \"Enough",
+          "emotion": "dramatic",
+          "scene_id": 4
+        },
+        {
+          "text": "\" Silence Tension crackles Justice looms A verdict reveals his arrogance’s cost",
+          "emotion": "satisfying",
+          "scene_id": 4
+        },
+        {
+          "text": "Guilt now weighs heavier than freedom Consequences are here",
+          "emotion": "satisfying",
+          "scene_id": 4
+        }
+      ],
+      "dialogue": [
+        {
+          "character_id": "defendant_fcc6c65f",
+          "text": "This can't be happening!",
+          "emotion": "shocked",
+          "scene_id": 4,
+          "approx_timing_hint": 5.0
+        },
+        {
+          "character_id": "judge_765e8613",
+          "text": "The court has reached a decision.",
+          "emotion": "stern",
+          "scene_id": 4,
+          "approx_timing_hint": 8.0
+        }
+      ],
+      "b_roll_prompts": [
+        "B-roll: Wide Shot of captured public attention due to its ",
+        "Detail shot related to Wide Shot of captured public a"
+      ]
+    }
+  ],
+  "created_at": "2025-11-19T22:23:01.312814",
+  "version": "1.0"
+}

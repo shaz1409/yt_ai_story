@@ -109,8 +109,15 @@ class StoryRewriter:
             # Enhance scene description with visual framing
             scene_description = self._enhance_scene_description(arc_text, scene_role, style)
 
+            # Expand narration using LLM to reach target word count (120-150 words for 60s)
+            # Target: ~30-40 words per scene for 4 scenes = 120-160 words total
+            target_words_per_scene = max(25, (duration_seconds * 2.2) // num_scenes)  # ~2.2 words/sec
+            expanded_narration = self._expand_narration_with_llm(
+                arc_text, scene_role, title, style, target_words_per_scene, style_preset
+            )
+
             # Optimize narration for speech
-            narration_texts = self._optimize_narration_for_speech(arc_text, style_preset)
+            narration_texts = self._optimize_narration_for_speech(expanded_narration, style_preset)
             narration_lines = [
                 NarrationLine(
                     text=text,
@@ -368,4 +375,154 @@ class StoryRewriter:
             return f"An emotional story about {title.lower()} that will leave you speechless."
         else:  # formal_dramatic
             return f"A dramatic courtroom story about {title.lower()} with an unexpected twist."
+
+    def _expand_narration_with_llm(
+        self, arc_text: str, scene_role: str, title: str, style: str, target_words: int, style_preset: dict
+    ) -> str:
+        """
+        Expand narration text using LLM to reach target word count with emotional, ragebait content.
+
+        Args:
+            arc_text: Original arc text (may be short)
+            scene_role: Narrative role (hook, setup, conflict, twist, resolution)
+            title: Story title
+            style: Story style
+            target_words: Target word count for this scene
+            style_preset: Style preset dict
+
+        Returns:
+            Expanded narration text (target_words length, emotional and dramatic)
+        """
+        # Check if LLM is available
+        if not hasattr(self.settings, "openai_api_key") or not self.settings.openai_api_key:
+            self.logger.debug("No OpenAI API key, using original text with basic expansion")
+            return self._expand_narration_heuristic(arc_text, target_words)
+
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=self.settings.openai_api_key)
+            model = getattr(self.settings, "dialogue_model", "gpt-4o-mini")
+
+            # Build emotional prompt based on style and scene role
+            emotion_map = {
+                "hook": "SHOCKING opening that grabs attention immediately",
+                "setup": "building tension and setting up the conflict",
+                "conflict": "explosive confrontation with high emotional stakes",
+                "twist": "dramatic unexpected reveal that changes everything",
+                "resolution": "satisfying conclusion with clear consequences",
+            }
+
+            emotion_goal = emotion_map.get(scene_role, "dramatic")
+
+            # Style-specific instructions
+            if style == "courtroom_drama":
+                style_instructions = """
+- Focus on injustice, power dynamics, and emotional consequences
+- Use formal but dramatic language
+- Emphasize the judge's authority and the defendant's vulnerability or arrogance
+- Create clear villains (cold judge, arrogant teen) and victims
+"""
+            elif style == "ragebait":
+                style_instructions = """
+- Maximize emotional polarity: shock, anger, injustice, humiliation
+- Use dramatic, gossipy language
+- Create clear "good vs evil" dynamics
+- Emphasize the most outrageous moments
+"""
+            else:
+                style_instructions = """
+- Focus on emotional depth and personal stakes
+- Use intimate, emotional language
+- Emphasize relationships and consequences
+"""
+
+            prompt = f"""Write {target_words} words of dramatic narration for a {style} YouTube Short.
+
+Story: {title}
+Scene role: {scene_role} ({emotion_goal})
+Original context: {arc_text[:200]}
+
+Requirements:
+{style_instructions}
+- Write exactly {target_words} words (no more, no less)
+- Make it tight, high-stakes, and emotionally charged
+- Use short, punchy sentences (8-14 words each)
+- Focus on what's happening NOW, not backstory
+- Create vivid imagery and emotional impact
+- For hook: start with something shocking or unexpected
+- For conflict: emphasize the confrontation and stakes
+- For twist: reveal something that changes everything
+- For resolution: show clear consequences and emotional payoff
+
+Write ONLY the narration text, no labels or explanations:"""
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert at writing viral, emotional narration for YouTube Shorts. Write tight, dramatic content that maximizes engagement and emotional impact.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.8,
+                max_tokens=300,  # Enough for ~150 words
+            )
+
+            expanded = response.choices[0].message.content.strip()
+            word_count = len(expanded.split())
+            self.logger.debug(f"Expanded narration for {scene_role}: {word_count} words (target: {target_words})")
+
+            # If still too short, pad with heuristic expansion
+            if word_count < target_words * 0.7:
+                self.logger.warning(f"LLM expansion too short ({word_count} < {target_words}), padding with heuristic")
+                expanded = self._expand_narration_heuristic(expanded, target_words)
+
+            return expanded
+
+        except Exception as e:
+            self.logger.warning(f"LLM narration expansion failed: {e}, using heuristic expansion")
+            return self._expand_narration_heuristic(arc_text, target_words)
+
+    def _expand_narration_heuristic(self, text: str, target_words: int) -> str:
+        """
+        Heuristic expansion when LLM is unavailable.
+
+        Expands text by adding emotional descriptors and dramatic language.
+        """
+        words = text.split()
+        current_words = len(words)
+
+        if current_words >= target_words:
+            return text
+
+        # Add emotional descriptors and dramatic language
+        emotional_additions = [
+            "in a shocking turn of events",
+            "the tension in the room was palpable",
+            "nobody saw this coming",
+            "the courtroom fell silent",
+            "what happened next would change everything",
+            "the judge's words hit like a hammer",
+            "the defendant's reaction stunned everyone",
+            "this was the moment everything changed",
+        ]
+
+        needed_words = target_words - current_words
+        additions_to_use = needed_words // 5  # ~5 words per addition
+
+        expanded = text
+        for i, addition in enumerate(emotional_additions[:additions_to_use]):
+            if i % 2 == 0:
+                expanded = f"{expanded}. {addition.capitalize()}"
+            else:
+                expanded = f"{expanded}, {addition}"
+
+        # Trim to target if over
+        expanded_words = expanded.split()
+        if len(expanded_words) > target_words:
+            expanded = " ".join(expanded_words[:target_words])
+
+        return expanded
 
