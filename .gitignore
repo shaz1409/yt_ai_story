@@ -56,3 +56,5 @@ secrets/*.json
 
 # Note: storage/episodes/ is NOT ignored - episode JSON files should be tracked
 
+.env.bak
+*.bak
