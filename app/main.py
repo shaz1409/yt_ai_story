@@ -1,4 +1,11 @@
-"""FastAPI application main entrypoint."""
+"""
+FastAPI entrypoint for the AI Story Shorts API.
+
+Current status:
+* Main orchestration happens via run_full_pipeline.py (CLI)
+* This API is optional, for future UI or remote triggering
+* If unused, it can be ignored without impacting the pipeline
+"""
 
 from contextlib import asynccontextmanager
 

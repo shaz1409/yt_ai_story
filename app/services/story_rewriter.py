@@ -1,11 +1,12 @@
 """Story Rewriter service - converts raw story into structured script."""
 
+import json
 import re
-from typing import Any
+from typing import Any, Optional
 
 from app.core.config import Settings
 from app.core.logging_config import get_logger
-from app.models.schemas import CharacterAction, NarrationLine, Scene, StoryScript
+from app.models.schemas import Beat, CharacterAction, NarrationLine, Scene, StoryScript
 
 
 # Style presets for emotional/viral content
@@ -58,8 +59,16 @@ class StoryRewriter:
         self.logger = logger
 
     def rewrite_story(
-        self, raw_text: str, title: str, duration_seconds: int = 60, style: str = "courtroom_drama"
-    ) -> StoryScript:
+        self,
+        raw_text: str,
+        title: str,
+        duration_seconds: int = 60,
+        style: str = "courtroom_drama",
+        niche: Optional[str] = None,
+        primary_emotion: Optional[str] = None,
+        secondary_emotion: Optional[str] = None,
+        topic_hint: Optional[str] = None,
+    ) -> tuple[StoryScript, Optional[str]]:
         """
         Rewrite raw story into structured script with emotional narrative arc.
 
@@ -68,11 +77,37 @@ class StoryRewriter:
             title: Story title
             duration_seconds: Target duration
             style: Story style (courtroom_drama, ragebait, relationship_drama)
+            niche: Story niche (optional, for beat-based generation)
+            primary_emotion: Primary emotion (optional, for beat-based generation)
+            secondary_emotion: Secondary emotion (optional, for beat-based generation)
+            topic_hint: Topic hint (optional, for beat-based generation)
 
         Returns:
             Structured story script with narrative arc
         """
         self.logger.info(f"Rewriting story: {title} (style: {style})")
+
+        # Try beat-based generation if we have the required inputs
+        pattern_type = None
+        if niche and primary_emotion:
+            try:
+                beats_result, pattern_type = self._generate_story_from_beats(
+                    niche=niche,
+                    primary_emotion=primary_emotion,
+                    secondary_emotion=secondary_emotion,
+                    topic_hint=topic_hint or title,
+                    style=style,
+                    duration_seconds=duration_seconds,
+                )
+                if beats_result:
+                    self.logger.info("Successfully generated story from beats")
+                    return beats_result, pattern_type
+            except Exception as e:
+                self.logger.warning(f"Beat-based generation failed: {e}, falling back to legacy logic")
+                # Fall through to legacy logic
+
+        # Legacy logic (fallback or when beat inputs not available)
+        self.logger.info("Using legacy story generation logic")
 
         # Get style preset
         style_preset = STYLE_PRESETS.get(style, STYLE_PRESETS["courtroom_drama"])
@@ -155,7 +190,7 @@ class StoryRewriter:
         self.logger.info(
             f"Created script with {len(scenes)} scenes and {sum(len(s.narration_lines) for s in scenes)} narration lines"
         )
-        return script
+        return script, pattern_type
 
     def _create_narrative_arc(self, raw_text: str, num_scenes: int, style_preset: dict) -> dict[str, str]:
         """
@@ -525,4 +560,455 @@ Write ONLY the narration text, no labels or explanations:"""
             expanded = " ".join(expanded_words[:target_words])
 
         return expanded
+
+    def _generate_story_from_beats(
+        self,
+        niche: str,
+        primary_emotion: str,
+        secondary_emotion: Optional[str],
+        topic_hint: str,
+        style: str,
+        duration_seconds: int,
+    ) -> tuple[Optional[StoryScript], Optional[str]]:
+        """
+        Generate story from beats using LLM with beat-based prompt.
+
+        Args:
+            niche: Story niche
+            primary_emotion: Primary emotion
+            secondary_emotion: Secondary emotion (optional)
+            topic_hint: Topic hint
+            style: Story style
+            duration_seconds: Target duration
+
+        Returns:
+            StoryScript if successful, None if LLM fails
+        """
+        # Check if LLM is available
+        if not hasattr(self.settings, "openai_api_key") or not self.settings.openai_api_key:
+            self.logger.debug("No OpenAI API key, cannot use beat-based generation")
+            return None
+
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=self.settings.openai_api_key)
+            model = getattr(self.settings, "dialogue_model", "gpt-4o-mini")
+
+            # Calculate word budget (2.3 words per second for narration)
+            target_word_count = int(duration_seconds * 2.3)
+            # Aim for 130-150 words for 60s, adjust proportionally
+            if duration_seconds == 60:
+                target_word_count = 140  # Sweet spot for 60s
+            else:
+                target_word_count = max(100, int(duration_seconds * 2.3))
+            
+            self.logger.info(f"Target narration word count: {target_word_count} words (for {duration_seconds}s video)")
+
+            # Build beat-based prompt
+            emotion_context = f"Primary emotion: {primary_emotion}"
+            if secondary_emotion:
+                emotion_context += f", Secondary emotion: {secondary_emotion}"
+
+            prompt = f"""You generate a short-form, highly engaging, emotionally provoking story for vertical video.
+
+Input variables:
+- niche: {niche}
+- primary_emotion: {primary_emotion}
+- secondary_emotion: {secondary_emotion or "none"}
+- topic_hint: {topic_hint}
+
+Beat types:
+- HOOK: Opening that grabs attention immediately (MUST grab attention within 1-2 seconds)
+- TRIGGER: Event that sets the story in motion
+- CONTEXT: Background information and setup
+- CLASH: Main conflict or confrontation
+- TWIST: Unexpected reveal or reversal
+- CTA: Call-to-action or conclusion (MUST end with a direct question to viewers)
+
+Patterns:
+- Pattern A: HOOK → TRIGGER → CONTEXT → CLASH → TWIST → CTA
+- Pattern B: HOOK → CONTEXT → CLASH → TRIGGER → CTA
+- Pattern C: HOOK → CONTEXT → TWIST → CLASH → CTA
+
+CRITICAL REQUIREMENTS:
+
+1. HOOK (10-15% of word budget):
+   - MUST start with either:
+     (a) A shocking line of dialogue (e.g., "The judge laughed as he read the sentence.")
+     OR
+     (b) A visceral image (e.g., "A teenager smirks as the victim's family sobs in court.")
+   - Must grab attention within 1-2 seconds
+   - Must be emotionally triggering (shock, outrage, injustice)
+   - Keep it concise but powerful
+
+2. TRIGGER/CONTEXT (25-35% of word budget):
+   - Set up the story efficiently
+   - Avoid long backstory dumps
+   - Keep beats concise
+   - Focus on what matters for emotional impact
+
+3. CLASH/TWIST (30-40% of word budget):
+   - This is where the emotional peak happens
+   - Make it intense, dramatic, rage-inducing
+   - Focus on injustice, shock, or moral conflict
+   - This is NOT neutral news - make viewers feel something
+
+4. CTA (10-15% of word budget):
+   - MUST end with a single, direct question aimed at the viewer
+   - Explicitly ask for their opinion in the comments
+   - Examples:
+     * "Should the judge have gone easier on them?"
+     * "Was this justice, or did the system fail?"
+     * "If this happened in your city, what would YOU want the sentence to be?"
+   - Make it personal and engaging
+
+WORD BUDGET:
+- Total narration text across all beats should be around {target_word_count} words
+- Keep beats concise; avoid long backstory dumps
+- Distribute words roughly: HOOK (10-15%), TRIGGER/CONTEXT (25-35%), CLASH/TWIST (30-40%), CTA (10-15%)
+
+EMOTIONAL FRAMING:
+- Lean into outrage, injustice, and shock. This is not neutral news – make viewers feel something immediately.
+- Focus less on legal realism and more on emotional impact and moral conflict.
+- Target emotion: {emotion_context}
+- Make it viral, emotional, and engaging
+- Focus on {niche} niche with {style} style
+
+TECHNICAL:
+- Choose ONE pattern (A, B, or C) that best fits the story
+- Generate beats in the chosen pattern order
+- Each beat must have: type, speaker ("narrator" or a character_id), target_emotion (rage/injustice/shock/disgust), and text
+- Text should be 1-3 sentences, speech-friendly (8-14 words per sentence)
+- Always end with a CTA beat
+
+Output JSON ONLY (no markdown, no code blocks):
+{{
+  "pattern_type": "A" | "B" | "C",
+  "beats": [
+    {{
+      "type": "HOOK",
+      "speaker": "narrator",
+      "target_emotion": "shock",
+      "text": "..."
+    }},
+    ...
+  ]
+}}"""
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert at creating viral, emotional stories for YouTube Shorts. Generate beat-based narratives that maximize engagement and emotional impact. Always output valid JSON only.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.85,
+                max_tokens=2000,
+            )
+
+            # Parse JSON response
+            response_text = response.choices[0].message.content.strip()
+            
+            # Remove markdown code blocks if present
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+            
+            beats_data = json.loads(response_text)
+            
+            pattern_type = beats_data.get("pattern_type", "A")
+            beats_list = beats_data.get("beats", [])
+            
+            if not beats_list:
+                self.logger.warning("No beats returned from LLM")
+                return None, None, None
+
+            # Validate word count
+            total_words = sum(len(beat.get("text", "").split()) for beat in beats_list)
+            min_words = int(target_word_count * 0.7)  # Allow 30% tolerance
+            
+            self.logger.info(f"Generated {len(beats_list)} beats using pattern {pattern_type}")
+            self.logger.info(f"Total narration words: {total_words} (target: {target_word_count}, min: {min_words})")
+            
+            # Log HOOK and CTA lines for inspection
+            hook_beat = next((b for b in beats_list if b.get("type") == "HOOK"), None)
+            cta_beat = next((b for b in beats_list if b.get("type") == "CTA"), None)
+            if hook_beat:
+                hook_text = hook_beat.get("text", "")[:100]  # First 100 chars
+                self.logger.info(f"HOOK line: {hook_text}...")
+            if cta_beat:
+                cta_text = cta_beat.get("text", "")
+                self.logger.info(f"CTA line: {cta_text}")
+            
+            # If text is too short, try regenerating once
+            if total_words < min_words:
+                self.logger.warning(
+                    f"Story text too short ({total_words} words < {min_words} min). "
+                    f"Regenerating once with emphasis on word count..."
+                )
+                
+                # Regenerate with stronger word count emphasis
+                retry_prompt = prompt + f"\n\nIMPORTANT: Previous attempt was too short ({total_words} words). You MUST generate at least {target_word_count} words total across all beats. Expand descriptions, add more detail to CLASH/TWIST beats, and ensure CTA is substantial."
+                
+                try:
+                    retry_response = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are an expert at creating viral, emotional stories for YouTube Shorts. Generate beat-based narratives that maximize engagement and emotional impact. Always output valid JSON only.",
+                            },
+                            {"role": "user", "content": retry_prompt},
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.85,
+                        max_tokens=2000,
+                    )
+                    
+                    retry_text = retry_response.choices[0].message.content.strip()
+                    if retry_text.startswith("```"):
+                        retry_text = retry_text.split("```")[1]
+                        if retry_text.startswith("json"):
+                            retry_text = retry_text[4:]
+                        retry_text = retry_text.strip()
+                    
+                    retry_beats_data = json.loads(retry_text)
+                    retry_beats_list = retry_beats_data.get("beats", [])
+                    retry_total_words = sum(len(beat.get("text", "").split()) for beat in retry_beats_list)
+                    
+                    if retry_total_words >= min_words:
+                        self.logger.info(f"Regeneration successful: {retry_total_words} words (target: {target_word_count})")
+                        beats_list = retry_beats_list
+                        pattern_type = retry_beats_data.get("pattern_type", pattern_type)
+                    else:
+                        self.logger.warning(f"Regeneration still too short ({retry_total_words} words). Using original beats.")
+                except Exception as e:
+                    self.logger.warning(f"Regeneration failed: {e}. Using original beats.")
+
+            # Convert beats to StoryScript
+            script = self._build_script_from_beats(beats_list, topic_hint, style, pattern_type, target_word_count)
+            return script, pattern_type
+
+        except json.JSONDecodeError as e:
+            self.logger.warning(f"Failed to parse JSON from LLM: {e}")
+            return None, None
+        except Exception as e:
+            self.logger.warning(f"Beat-based generation failed: {e}")
+            return None, None
+
+    def _build_script_from_beats(
+        self, beats_list: list[dict], title: str, style: str, pattern_type: str, target_word_count: Optional[int] = None
+    ) -> StoryScript:
+        """
+        Build StoryScript from beats.
+
+        Args:
+            beats_list: List of beat dictionaries
+            title: Story title
+            style: Story style
+            pattern_type: Pattern type (A, B, or C)
+
+        Returns:
+            StoryScript object
+        """
+        # Parse beats into Beat objects
+        beats = []
+        for beat_dict in beats_list:
+            try:
+                beat = Beat(
+                    type=beat_dict.get("type", "CONTEXT"),
+                    speaker=beat_dict.get("speaker", "narrator"),
+                    target_emotion=beat_dict.get("target_emotion", "shock"),
+                    text=beat_dict.get("text", ""),
+                )
+                beats.append(beat)
+            except Exception as e:
+                self.logger.warning(f"Failed to parse beat: {e}, skipping")
+                continue
+
+        if not beats:
+            raise ValueError("No valid beats to build script from")
+
+        # Ensure CTA is at the end
+        cta_beats = [b for b in beats if b.type == "CTA"]
+        non_cta_beats = [b for b in beats if b.type != "CTA"]
+        beats = non_cta_beats + cta_beats
+
+        # Group beats into scenes
+        # Strategy: Group consecutive beats by type or create new scene for major transitions
+        scenes = []
+        current_scene_beats = []
+        scene_id = 1
+
+        for i, beat in enumerate(beats):
+            # Start new scene for major beat types or when we have enough beats
+            should_start_new_scene = (
+                beat.type in ["HOOK", "CLASH", "TWIST", "CTA"]
+                or len(current_scene_beats) >= 2
+            )
+
+            if should_start_new_scene and current_scene_beats:
+                # Create scene from current beats
+                scene = self._create_scene_from_beats(current_scene_beats, scene_id, style)
+                scenes.append(scene)
+                scene_id += 1
+                current_scene_beats = [beat]
+            else:
+                current_scene_beats.append(beat)
+
+        # Add final scene
+        if current_scene_beats:
+            scene = self._create_scene_from_beats(current_scene_beats, scene_id, style)
+            scenes.append(scene)
+
+        # Generate logline from first beat
+        logline = self._generate_logline_from_beats(beats, style)
+
+        # Calculate and log word distribution by beat type
+        word_counts_by_type = {}
+        for beat in beats:
+            beat_type = beat.type
+            word_count = len(beat.text.split())
+            if beat_type not in word_counts_by_type:
+                word_counts_by_type[beat_type] = 0
+            word_counts_by_type[beat_type] += word_count
+        
+        total_narration_words = sum(word_counts_by_type.values())
+        
+        # Log word distribution
+        self.logger.info(f"Word distribution by beat type:")
+        for beat_type, count in word_counts_by_type.items():
+            percentage = (count / total_narration_words * 100) if total_narration_words > 0 else 0
+            self.logger.info(f"  {beat_type}: {count} words ({percentage:.1f}%)")
+        
+        if target_word_count:
+            self.logger.info(f"Total narration words: {total_narration_words} (target: {target_word_count})")
+            if total_narration_words < target_word_count * 0.7:
+                self.logger.warning(f"⚠️  Story is significantly shorter than target ({total_narration_words} < {int(target_word_count * 0.7)})")
+
+        script = StoryScript(
+            title=title,
+            logline=logline,
+            scenes=scenes,
+        )
+
+        # Count narration lines across all scenes
+        total_narration_lines = sum(len(scene.narration) for scene in scenes)
+        
+        self.logger.info(
+            f"Built script with {len(scenes)} scenes, {len(beats)} beats, {total_narration_lines} narration lines (pattern: {pattern_type})"
+        )
+        return script
+
+    def _create_scene_from_beats(self, beats: list[Beat], scene_id: int, style: str) -> Scene:
+        """
+        Create a Scene from a list of beats.
+
+        Args:
+            beats: List of Beat objects
+            scene_id: Scene identifier
+            style: Story style
+
+        Returns:
+            Scene object
+        """
+        # Determine scene description from beat types
+        beat_types = [b.type for b in beats]
+        primary_type = beat_types[0] if beat_types else "CONTEXT"
+
+        # Build scene description
+        camera_map = {
+            "HOOK": "extreme close-up",
+            "TRIGGER": "medium shot",
+            "CONTEXT": "wide shot",
+            "CLASH": "close-up",
+            "TWIST": "dramatic close-up",
+            "CTA": "medium shot",
+        }
+
+        camera = camera_map.get(primary_type, "medium shot")
+        scene_description = f"{camera.title()} framing. {primary_type.lower().replace('_', ' ')} scene. {style.replace('_', ' ').title()} setting, cinematic, ultra-detailed."
+
+        # Convert beats to narration lines
+        narration_lines = []
+        character_actions = []
+
+        for beat in beats:
+            if beat.speaker == "narrator":
+                # Split text into sentences for narration lines
+                sentences = re.split(r"[.!?]+", beat.text)
+                sentences = [s.strip() for s in sentences if s.strip()]
+
+                for sentence in sentences:
+                    if sentence:
+                        narration_lines.append(
+                            NarrationLine(
+                                text=sentence,
+                                emotion=self._map_emotion_from_target(beat.target_emotion),
+                                scene_id=scene_id,
+                            )
+                        )
+            else:
+                # Character action (dialogue will be handled separately)
+                character_actions.append(
+                    CharacterAction(
+                        character_id=beat.speaker,
+                        action_description=beat.text,
+                        emotion=self._map_emotion_from_target(beat.target_emotion),
+                    )
+                )
+
+        # Ensure at least one narration line
+        if not narration_lines:
+            # Use first beat text as narration
+            narration_lines.append(
+                NarrationLine(
+                    text=beats[0].text if beats else "Scene continues...",
+                    emotion="dramatic",
+                    scene_id=scene_id,
+                )
+            )
+
+        return Scene(
+            scene_id=scene_id,
+            description=scene_description,
+            narration_lines=narration_lines,
+            character_actions=character_actions,
+        )
+
+    def _map_emotion_from_target(self, target_emotion: str) -> str:
+        """Map target emotion to narration emotion."""
+        emotion_map = {
+            "rage": "dramatic",
+            "injustice": "emotional",
+            "shock": "dramatic",
+            "disgust": "dramatic",
+        }
+        return emotion_map.get(target_emotion.lower(), "dramatic")
+
+    def _generate_logline_from_beats(self, beats: list[Beat], style: str) -> str:
+        """Generate logline from beats."""
+        if not beats:
+            return "A dramatic story with an unexpected twist."
+
+        # Use HOOK beat text as logline base
+        hook_beats = [b for b in beats if b.type == "HOOK"]
+        if hook_beats:
+            hook_text = hook_beats[0].text
+            # Truncate to ~60 chars
+            if len(hook_text) > 60:
+                hook_text = hook_text[:57] + "..."
+            return hook_text
+
+        # Fallback to first beat
+        first_text = beats[0].text
+        if len(first_text) > 60:
+            first_text = first_text[:57] + "..."
+        return first_text
 

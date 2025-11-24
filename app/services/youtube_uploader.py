@@ -1,6 +1,7 @@
 """YouTube Uploader - uploads videos to YouTube via Data API v3."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,6 +32,7 @@ class YouTubeUploader:
         tags: Optional[list[str]] = None,
         privacy_status: str = "public",
         category_id: str = "22",  # People & Blogs
+        scheduled_publish_at: Optional[datetime] = None,
     ) -> str:
         """
         Upload video to YouTube.
@@ -42,6 +44,8 @@ class YouTubeUploader:
             tags: Optional list of tags
             privacy_status: Privacy status (public, unlisted, private)
             category_id: YouTube category ID (default: 22 for People & Blogs)
+            scheduled_publish_at: Optional datetime for scheduled publication.
+                If provided, privacy_status will be set to "private" and video will be scheduled.
 
         Returns:
             YouTube video ID or URL
@@ -52,11 +56,25 @@ class YouTubeUploader:
         if not video_path.exists():
             raise FileNotFoundError(f"Video file not found: {video_path}")
 
+        # If scheduling is requested, privacy must be "private"
+        if scheduled_publish_at is not None:
+            if privacy_status != "private":
+                self.logger.warning(
+                    f"Scheduled publish time provided but privacy_status is '{privacy_status}'. "
+                    "Setting to 'private' (required for scheduled uploads)."
+                )
+            privacy_status = "private"
+
         self.logger.info("=" * 60)
         self.logger.info("Starting YouTube upload")
         self.logger.info(f"Video: {video_path}")
         self.logger.info(f"Title: {title}")
         self.logger.info(f"Privacy: {privacy_status}")
+        if scheduled_publish_at:
+            self.logger.info(f"Scheduled publish time: {scheduled_publish_at.isoformat()}")
+            self.logger.info(f"Scheduled publish time (local): {scheduled_publish_at}")
+        else:
+            self.logger.info("Publishing immediately (no schedule)")
         self.logger.info("=" * 60)
 
         # Retry logic for upload
@@ -76,6 +94,31 @@ class YouTubeUploader:
                 youtube = self._get_youtube_service()
 
                 # Prepare video metadata
+                status_dict = {
+                    "privacyStatus": privacy_status,
+                }
+                
+                # Add publishAt if scheduling is requested
+                if scheduled_publish_at is not None:
+                    # YouTube requires RFC 3339 format (ISO 8601)
+                    from datetime import timezone
+                    
+                    if scheduled_publish_at.tzinfo is None:
+                        # Naive datetime - convert to UTC and add "Z"
+                        publish_at_utc = scheduled_publish_at.replace(tzinfo=timezone.utc)
+                        publish_at_iso = publish_at_utc.isoformat().replace("+00:00", "Z")
+                        self.logger.warning(
+                            f"Scheduled publish time is timezone-naive, assuming UTC: {publish_at_iso}"
+                        )
+                    else:
+                        # Timezone-aware datetime - use isoformat() directly (RFC3339 compatible)
+                        # DO NOT add "Z" manually - isoformat() handles timezone offset correctly
+                        publish_at_iso = scheduled_publish_at.isoformat()
+                    
+                    status_dict["publishAt"] = publish_at_iso
+                    self.logger.info(f"Scheduling video for {scheduled_publish_at.isoformat()}")
+                    self.logger.info(f"Setting publishAt to: {publish_at_iso}")
+                
                 body = {
                     "snippet": {
                         "title": title,
@@ -83,9 +126,7 @@ class YouTubeUploader:
                         "tags": tags or [],
                         "categoryId": category_id,
                     },
-                    "status": {
-                        "privacyStatus": privacy_status,
-                    },
+                    "status": status_dict,
                 }
 
                 # Upload video
@@ -93,10 +134,14 @@ class YouTubeUploader:
                     self.logger.info(f"Retry attempt {attempt}/{max_retries} for YouTube upload...")
                 else:
                     self.logger.info("Uploading video to YouTube...")
+                
+                # Import MediaFileUpload for file upload
+                from googleapiclient.http import MediaFileUpload
+                
                 insert_request = youtube.videos().insert(
                     part=",".join(body.keys()),
                     body=body,
-                    media_body=youtube.MediaFileUpload(str(video_path), chunksize=-1, resumable=True),
+                    media_body=MediaFileUpload(str(video_path), chunksize=-1, resumable=True),
                 )
 
                 response = self._resumable_upload(insert_request)
@@ -108,6 +153,22 @@ class YouTubeUploader:
                 self.logger.info("YouTube upload complete!")
                 self.logger.info(f"Video ID: {video_id}")
                 self.logger.info(f"Video URL: {video_url}")
+                
+                # Log scheduling confirmation
+                if scheduled_publish_at is not None:
+                    # Check if publishAt was accepted in response
+                    if "status" in response and "publishAt" in response["status"]:
+                        confirmed_publish_at = response["status"]["publishAt"]
+                        self.logger.info(f"✅ Scheduled publish confirmed: {confirmed_publish_at}")
+                        self.logger.info(f"   Video will be published at: {scheduled_publish_at}")
+                    else:
+                        self.logger.warning(
+                            "⚠️  Scheduled publish time provided but not found in API response. "
+                            "Check YouTube Studio to verify scheduling."
+                        )
+                else:
+                    self.logger.info("Video published immediately (public)")
+                
                 self.logger.info("=" * 60)
 
                 return video_url

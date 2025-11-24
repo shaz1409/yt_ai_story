@@ -1,10 +1,8 @@
 """Character Video Engine - generates character face images and talking-head clips."""
 
-import io
 from pathlib import Path
 from typing import Any, Optional
 
-import requests
 from moviepy.editor import AudioFileClip, ImageClip
 from PIL import Image
 
@@ -15,6 +13,7 @@ if not hasattr(Image, "ANTIALIAS"):
 from app.core.config import Settings
 from app.core.logging_config import get_logger
 from app.models.schemas import Character, DialogueLine, VideoPlan
+from app.services.hf_endpoint_client import HFEndpointClient
 
 
 class TalkingHeadProvider:
@@ -120,37 +119,82 @@ class CharacterVideoEngine:
         self.settings = settings
         self.logger = logger
         self.talking_head_provider = TalkingHeadProvider(settings, logger)
+        
+        # Initialize HF Endpoint client for image generation
+        try:
+            self.hf_endpoint_client = HFEndpointClient(settings, logger)
+        except ValueError as e:
+            self.logger.warning(f"HF Endpoint not configured: {e}. Will use placeholder images.")
+            self.hf_endpoint_client = None
 
     def generate_character_face_image(
-        self, character: Character, output_dir: Path, style: str = "courtroom_drama"
+        self,
+        character: Character,
+        output_dir: Path,
+        style: str = "courtroom_drama",
+        image_style: str = "photorealistic",
     ) -> Path:
         """
         Generate a single photorealistic base image for this character.
+
+        Uses seed locking based on character_id for consistent appearance across shots.
 
         Args:
             character: Character object
             output_dir: Directory to save image
             style: Story style (for prompt generation)
+            image_style: Image style ("photorealistic" or "artistic")
 
         Returns:
             Path to the generated image file
         """
-        self.logger.info(f"Generating face image for character: {character.name} ({character.role})")
+        self.logger.info(
+            f"Generating {image_style} face image for character: {character.name} ({character.role})"
+        )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         image_path = output_dir / f"character_{character.id}_face.png"
 
         # Build photoreal prompt
-        prompt = self._build_character_face_prompt(character, style)
+        prompt = self._build_character_face_prompt(character, style, image_style)
 
-        # Generate image
+        # Generate character identity seed from character_id for consistency
+        character_seed = self._generate_character_seed(character.id)
+
+        # Generate image with seed locking
         try:
-            self._generate_character_image(prompt, image_path)
+            self._generate_character_image(
+                prompt,
+                image_path,
+                seed=character_seed,
+                sharpness=8,
+                realism_level="ultra",
+                film_style="kodak_portra",
+            )
         except Exception as e:
             self.logger.error(f"Failed to generate character image: {e}, creating placeholder")
             self._create_placeholder_character_image(image_path, character)
 
         return image_path
+
+    def _generate_character_seed(self, character_id: str) -> int:
+        """
+        Generate a deterministic seed from character_id for consistent appearance.
+
+        Args:
+            character_id: Character ID
+
+        Returns:
+            Integer seed (0-4294967295)
+        """
+        import hashlib
+
+        # Hash character_id to get a consistent seed
+        hash_obj = hashlib.md5(character_id.encode())
+        hash_int = int(hash_obj.hexdigest(), 16)
+        # Convert to 32-bit integer (0 to 4294967295)
+        seed = hash_int % (2**32)
+        return seed
 
     def generate_talking_head_clip(
         self,
@@ -159,9 +203,13 @@ class CharacterVideoEngine:
         audio_path: Path,
         output_dir: Path,
         style: str = "courtroom_drama",
+        emotion: str = "neutral",
     ) -> Path:
         """
         Generate a short talking-head video clip for a dialogue line.
+
+        Uses HF FLUX image of the character as base.
+        If direct talking-head isn't possible, falls back to Ken Burns + subtle mouth-movement effect.
 
         Args:
             character: Character object
@@ -169,28 +217,38 @@ class CharacterVideoEngine:
             audio_path: Path to dialogue audio file
             output_dir: Directory to save clip
             style: Story style
+            emotion: Emotion for the clip (affects visual treatment)
 
         Returns:
             Path to the generated video clip
         """
         self.logger.info(
-            f"Generating talking-head clip for {character.name}: '{dialogue_line.text[:50]}...'"
+            f"Generating talking-head clip for {character.name} (emotion: {emotion}): '{dialogue_line.text[:50]}...'"
         )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         clip_path = output_dir / f"talking_head_{character.id}_{dialogue_line.character_id}.mp4"
 
         # Ensure character face image exists
+        # Check both new location (outputs/characters/) and legacy location
+        characters_dir = output_dir.parent / "characters" if output_dir.name != "characters" else output_dir
         character_faces_dir = output_dir / "character_faces"
-        face_image_path = character_faces_dir / f"character_{character.id}_face.png"
+        
+        face_image_path = characters_dir / f"character_{character.id}_face.png"
+        if not face_image_path.exists():
+            face_image_path = character_faces_dir / f"character_{character.id}_face.png"
 
         if not face_image_path.exists():
             self.logger.info(f"Character face image not found, generating: {face_image_path}")
-            self.generate_character_face_image(character, character_faces_dir, style)
+            image_style = getattr(self.settings, "character_image_style", "photorealistic")
+            self.generate_character_face_image(character, characters_dir, style, image_style)
+            face_image_path = characters_dir / f"character_{character.id}_face.png"
 
         # Generate talking-head clip with fallback
         try:
+            # Use existing talking head provider (Ken Burns + zoom effect)
             self.talking_head_provider.generate_talking_head(face_image_path, audio_path, clip_path)
+            self.logger.info(f"Generated talking-head clip: {clip_path}")
             return clip_path
         except Exception as e:
             self.logger.warning(f"Talking-head generation failed for {character.name}: {e}, will fallback to scene visual")
@@ -198,21 +256,33 @@ class CharacterVideoEngine:
             raise
 
     def ensure_character_assets(
-        self, video_plan: VideoPlan, output_dir: Path, style: str = "courtroom_drama"
+        self,
+        video_plan: VideoPlan,
+        output_dir: Path,
+        style: str = "courtroom_drama",
+        image_style: str = "photorealistic",
     ) -> dict[str, Path]:
         """
         Ensure all main characters have base face images generated.
+
+        Images are saved to outputs/characters/ for better organization.
 
         Args:
             video_plan: VideoPlan with characters
             output_dir: Directory to save assets
             style: Story style
+            image_style: Image style ("photorealistic" or "artistic")
 
         Returns:
             Mapping: character_id -> image_path
         """
         self.logger.info("Ensuring character assets are generated...")
 
+        # Use dedicated characters directory
+        characters_dir = output_dir.parent / "characters" if output_dir.name != "characters" else output_dir
+        characters_dir.mkdir(parents=True, exist_ok=True)
+
+        # Also keep in character_faces for backward compatibility
         character_faces_dir = output_dir / "character_faces"
         character_faces_dir.mkdir(parents=True, exist_ok=True)
 
@@ -221,161 +291,218 @@ class CharacterVideoEngine:
         # Generate faces for all non-narrator characters
         for character in video_plan.characters:
             if character.role.lower() != "narrator":
-                face_path = character_faces_dir / f"character_{character.id}_face.png"
+                # Primary location: outputs/characters/
+                face_path = characters_dir / f"character_{character.id}_face.png"
+                # Secondary location: character_faces/ (for backward compatibility)
+                legacy_path = character_faces_dir / f"character_{character.id}_face.png"
 
                 if not face_path.exists():
-                    self.logger.info(f"Generating face for character: {character.name}")
-                    face_path = self.generate_character_face_image(character, character_faces_dir, style)
+                    self.logger.info(f"Generating {image_style} face for character: {character.name}")
+                    face_path = self.generate_character_face_image(
+                        character, characters_dir, style, image_style
+                    )
+                    # Also copy to legacy location for backward compatibility
+                    if face_path.exists():
+                        import shutil
+                        shutil.copy2(face_path, legacy_path)
+                        self.logger.debug(f"Copied character image to legacy location: {legacy_path}")
                 else:
                     self.logger.debug(f"Character face already exists: {character.name}")
 
                 character_assets[character.id] = face_path
 
-        self.logger.info(f"Ensured {len(character_assets)} character face images")
+        self.logger.info(f"Ensured {len(character_assets)} character face images in {characters_dir}")
         return character_assets
 
-    def _build_character_face_prompt(self, character: Character, style: str) -> str:
+    def _build_character_face_prompt(
+        self, character: Character, style: str, image_style: str = "photorealistic"
+    ) -> str:
         """
-        Build photorealistic character face prompt.
+        Build photorealistic character face prompt for character portrait.
 
         Args:
             character: Character object
             style: Story style
+            image_style: Image style ("photorealistic" or "artistic")
 
         Returns:
             Image generation prompt
         """
-        # Extract appearance details
+        # Extract appearance details with personality mapping
         appearance = character.appearance or {}
-        age = appearance.get("age", "middle-aged")
-        gender = appearance.get("gender", "")
-        ethnicity = appearance.get("ethnicity", "")
-        hair = appearance.get("hair", "")
-        expression = appearance.get("expression", "serious")
+        age = self._map_personality_to_age(character, appearance)
+        gender = self._map_personality_to_gender(character, appearance)
+        ethnicity = appearance.get("ethnicity", self._map_personality_to_ethnicity(character))
+        hair = appearance.get("hair", self._map_personality_to_hair(character))
+        expression = appearance.get("expression", self._map_personality_to_expression(character))
+        clothing = self._map_personality_to_clothing(character)
 
-        # Build role-specific context
-        role_context = {
-            "judge": "authoritative judge in black robes",
-            "defendant": "defendant in formal attire",
-            "lawyer": "professional lawyer in business suit",
-            "prosecutor": "serious prosecutor in formal suit",
-            "witness": "witness in courtroom",
-        }
-        role_desc = role_context.get(character.role.lower(), f"{character.role} in courtroom")
+        if image_style == "photorealistic":
+            # Ultra-realistic photorealistic prompt
+            prompt_parts = [
+                "ultra-realistic portrait of a human",
+                f"{age} {gender}".strip() if gender else age,
+                ethnicity if ethnicity else "",
+                "cinematic lighting",
+                "shallow depth of field",
+                "50mm lens",
+                "natural skin texture",
+                "detailed facial features",
+                f"facial expression: {expression}",
+                hair if hair else "",
+                clothing if clothing else "",
+                "professional photography",
+                "Kodak Portra 400 film grain",
+                "Sony FX3 color grading",
+                "8k resolution",
+                "vertical format 9:16",
+                "sharp focus on eyes",
+                "soft bokeh background",
+            ]
+        else:
+            # Artistic/legacy style (backward compatible)
+            role_context = {
+                "judge": "authoritative judge in black robes",
+                "defendant": "defendant in formal attire",
+                "lawyer": "professional lawyer in business suit",
+                "prosecutor": "serious prosecutor in formal suit",
+                "witness": "witness in courtroom",
+            }
+            role_desc = role_context.get(character.role.lower(), f"{character.role} in courtroom")
 
-        # Build prompt parts
-        prompt_parts = [
-            "Photorealistic portrait",
-            f"{age} {gender}".strip() if gender else age,
-            ethnicity if ethnicity else "",
-            role_desc,
-            f"facial expression: {expression}",
-            hair if hair else "",
-            f"{character.personality} personality",
-            f"{style.replace('_', ' ')} style",
-            "cinematic lighting",
-            "ultra-realistic",
-            "4k quality",
-            "vertical portrait",
-            "close-up headshot",
-            "still from a legal drama TV show",
-            "professional photography",
-        ]
+            prompt_parts = [
+                "Close-up portrait",
+                f"{age} {gender}".strip() if gender else age,
+                ethnicity if ethnicity else "",
+                role_desc,
+                f"facial expression: {expression}",
+                hair if hair else "",
+                f"{character.personality} personality",
+                "neutral or slightly dramatic lighting",
+                "single subject",
+                "photorealistic",
+                "ultra-realistic",
+                "4k quality",
+                "vertical format",
+                "professional headshot",
+            ]
 
         # Filter out empty parts and join
         prompt = ". ".join([p for p in prompt_parts if p.strip()]) + "."
 
         return prompt
 
-    def _generate_character_image(self, prompt: str, output_path: Path) -> None:
+    def _map_personality_to_age(self, character: Character, appearance: dict) -> str:
+        """Map personality traits to age range."""
+        age = appearance.get("age") or appearance.get("age_range", "")
+        if age:
+            return age
+
+        personality_lower = character.personality.lower()
+        if any(trait in personality_lower for trait in ["experienced", "authoritative", "stern", "judge"]):
+            return "50-70 years old"
+        elif any(trait in personality_lower for trait in ["young", "teen", "teenager", "defendant"]):
+            return "18-25 years old"
+        elif any(trait in personality_lower for trait in ["professional", "confident", "lawyer", "prosecutor"]):
+            return "35-50 years old"
+        else:
+            return "30-45 years old"
+
+    def _map_personality_to_gender(self, character: Character, appearance: dict) -> str:
+        """Map personality traits to gender."""
+        gender = appearance.get("gender", "")
+        if gender and gender != "any":
+            return gender
+
+        # Default based on role (can be randomized in future)
+        role = character.role.lower()
+        if role in ["judge", "lawyer", "prosecutor"]:
+            return "male"  # Default, can be randomized
+        elif role in ["defendant", "witness"]:
+            return "any"  # More diverse
+        else:
+            return "any"
+
+    def _map_personality_to_ethnicity(self, character: Character) -> str:
+        """Map personality traits to ethnicity (diverse representation)."""
+        # For now, return empty to let model generate diverse representation
+        # In future, can add logic based on story context or character traits
+        return ""
+
+    def _map_personality_to_hair(self, character: Character) -> str:
+        """Map personality traits to hair style."""
+        personality_lower = character.personality.lower()
+        if "authoritative" in personality_lower or "judge" in character.role.lower():
+            return "short professional haircut, graying"
+        elif "young" in personality_lower or "teen" in personality_lower:
+            return "modern hairstyle"
+        else:
+            return "professional hairstyle"
+
+    def _map_personality_to_expression(self, character: Character) -> str:
+        """Map personality traits to facial expression."""
+        personality_lower = character.personality.lower()
+        if "stern" in personality_lower or "authoritative" in personality_lower:
+            return "serious, determined"
+        elif "nervous" in personality_lower or "anxious" in personality_lower:
+            return "worried, tense"
+        elif "confident" in personality_lower:
+            return "confident, composed"
+        elif "defensive" in personality_lower:
+            return "defensive, guarded"
+        else:
+            return "neutral, professional"
+
+    def _map_personality_to_clothing(self, character: Character) -> str:
+        """Map personality traits to clothing."""
+        role = character.role.lower()
+        if role == "judge":
+            return "black judicial robes"
+        elif role in ["lawyer", "prosecutor"]:
+            return "professional business suit, formal attire"
+        elif role == "defendant":
+            return "formal courtroom attire"
+        else:
+            return "professional attire"
+
+    def _generate_character_image(
+        self,
+        prompt: str,
+        output_path: Path,
+        seed: Optional[int] = None,
+        sharpness: int = 8,
+        realism_level: str = "ultra",
+        film_style: str = "kodak_portra",
+    ) -> None:
         """
-        Generate character image using Hugging Face or stub.
+        Generate character image using HF Inference Endpoint with photorealistic parameters.
 
         Args:
             prompt: Image generation prompt
             output_path: Path to save image
+            seed: Random seed for consistency (0-4294967295)
+            sharpness: Sharpness level (1-10, default 8)
+            realism_level: Realism level ("high", "ultra", "photoreal")
+            film_style: Film style ("kodak_portra", "canon", "sony_fx3", "fuji")
         """
-        hf_token = getattr(self.settings, "huggingface_token", None)
-
-        if hf_token:
-            self._generate_image_hf(prompt, output_path)
+        if self.hf_endpoint_client:
+            try:
+                self.hf_endpoint_client.generate_image(
+                    prompt,
+                    output_path,
+                    image_type="character_portrait",
+                    seed=seed,
+                    sharpness=sharpness,
+                    realism_level=realism_level,
+                    film_style=film_style,
+                )
+            except Exception as e:
+                self.logger.error(f"HF Endpoint image generation failed: {e}, using placeholder")
+                self._create_placeholder_character_image(output_path, None, prompt)
         else:
-            self.logger.warning("No Hugging Face token - using placeholder character image")
+            self.logger.warning("HF Endpoint not configured - using placeholder character image")
             self._create_placeholder_character_image(output_path, None, prompt)
 
-    def _generate_image_hf(self, prompt: str, output_path: Path) -> None:
-        """Generate image using Hugging Face API with configurable models."""
-        # Build model list: primary first (if set), then fallback models
-        models_to_try = []
-        if self.settings.hf_image_model_primary:
-            models_to_try.append(self.settings.hf_image_model_primary)
-        models_to_try.extend(self.settings.hf_image_models)
-        
-        headers = {"Content-Type": "application/json"}
-        hf_token = getattr(self.settings, "huggingface_token", "")
-        if hf_token and hf_token.strip():
-            headers["Authorization"] = f"Bearer {hf_token}"
-
-        payload = {
-            "inputs": prompt,
-            "parameters": {
-                "num_inference_steps": 25,  # More steps for better quality
-                "guidance_scale": 7.5,
-            },
-        }
-
-        last_error = None
-        for model_id in models_to_try:
-            api_url = f"https://api-inference.huggingface.co/models/{model_id}"
-            try:
-                self.logger.debug(f"Trying model: {model_id}")
-                response = requests.post(api_url, json=payload, headers=headers, timeout=60)
-
-                if response.status_code == 503:
-                    self.logger.warning(f"Model {model_id} loading, waiting 10 seconds...")
-                    import time
-                    time.sleep(10)
-                    response = requests.post(api_url, json=payload, headers=headers, timeout=60)
-
-                if response.status_code == 410:
-                    # Model gone, try next
-                    self.logger.warning(
-                        f"Model {model_id} returned 410 (Gone) – check if this model still supports HF Inference API."
-                    )
-                    continue
-
-                if response.status_code != 200:
-                    # Extract error message from response body (first 200 chars)
-                    error_body = ""
-                    try:
-                        error_body = response.text[:200] if hasattr(response, "text") else ""
-                    except:
-                        pass
-                    
-                    error_msg = f"Hugging Face API error for {model_id}: status {response.status_code}"
-                    if error_body:
-                        error_msg += f" - {error_body}"
-                    
-                    self.logger.warning(error_msg)
-                    raise Exception(error_msg)
-
-                # Success - save image and break out of loop
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                image = Image.open(io.BytesIO(response.content))
-                # Crop to portrait aspect ratio (focus on face)
-                target_size = (1080, 1920)  # 9:16 vertical
-                image = image.resize(target_size, Image.Resampling.LANCZOS)
-                image.save(output_path, "PNG", quality=95)
-                self.logger.info(f"Successfully generated image using model: {model_id}")
-                return  # Success, exit function
-                
-            except Exception as e:
-                last_error = e
-                self.logger.warning(f"Model {model_id} failed: {e}, trying next...")
-                continue
-        
-        # All models failed
-        raise Exception(f"All Hugging Face models failed. Last error: {last_error}")
 
     def _create_placeholder_character_image(
         self, output_path: Path, character: Optional[Character] = None, prompt: str = ""

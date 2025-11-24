@@ -66,7 +66,20 @@ class DialogueEngine:
 
         dialogue_plan = DialoguePlan(lines=dialogue_lines)
 
+        # Log dialogue distribution by scene role
+        scene_role_counts = {}
+        for scene in story_script.scenes:
+            scene_role = self._detect_scene_role(scene)
+            scene_dialogue_count = len([dl for dl in dialogue_lines if dl.scene_id == scene.scene_id])
+            if scene_role not in scene_role_counts:
+                scene_role_counts[scene_role] = 0
+            scene_role_counts[scene_role] += scene_dialogue_count
+        
         self.logger.info(f"Generated {len(dialogue_lines)} dialogue lines across {len(story_script.scenes)} scenes")
+        if scene_role_counts:
+            role_summary = ", ".join([f"{role}: {count}" for role, count in scene_role_counts.items()])
+            self.logger.info(f"Dialogue by scene role: {role_summary}")
+        
         return dialogue_plan
 
     def _generate_scene_dialogue(self, scene: Scene, character_map: dict) -> list[DialogueLine]:
@@ -85,6 +98,15 @@ class DialogueEngine:
         # Determine scene role (hook, setup, conflict, twist, resolution)
         # Extract from scene description or use scene_id as heuristic
         scene_role = self._detect_scene_role(scene)
+
+        # Adjust max_lines based on scene role priority
+        # HOOK: 1 strong line, CLASH/TWIST: 2-3 lines, others: default
+        if scene_role == "hook":
+            max_lines_for_scene = 1  # ONE extremely strong line
+        elif scene_role in ["conflict", "twist"]:
+            max_lines_for_scene = min(3, self.max_lines_per_scene + 1)  # 2-3 lines of back-and-forth
+        else:
+            max_lines_for_scene = self.max_lines_per_scene
 
         # Try LLM generation if enabled
         if self.use_llm and self.llm_client:
@@ -108,7 +130,7 @@ class DialogueEngine:
                     scene_description=scene.description,
                     scene_role=scene_role,
                     characters=characters,
-                    max_lines=self.max_lines_per_scene,
+                    max_lines=max_lines_for_scene,
                     style=getattr(self.settings, "default_style", "courtroom_drama"),
                 )
 

@@ -131,6 +131,9 @@ class CharacterEngine:
         voice_profiles = template.get("voice_profiles", ["neutral"])
         voice_profile = voice_profiles[index % len(voice_profiles)]
 
+        # Generate detailed voice profile for character speech
+        detailed_voice_profile = self._generate_detailed_voice_profile(role, template, appearance)
+
         character = Character(
             id=f"{role}_{uuid.uuid4().hex[:8]}",
             role=role,
@@ -138,9 +141,62 @@ class CharacterEngine:
             appearance=appearance,
             personality=personality,
             voice_profile=voice_profile,
+            detailed_voice_profile=detailed_voice_profile,
         )
 
         return character
+
+    def _generate_detailed_voice_profile(self, role: str, template: dict, appearance: dict) -> Any:
+        """
+        Generate detailed voice profile for character TTS.
+
+        Args:
+            role: Character role
+            template: Character template
+            appearance: Appearance dict
+
+        Returns:
+            CharacterVoiceProfile object
+        """
+        from app.models.schemas import CharacterVoiceProfile
+
+        # Extract gender from appearance or template
+        gender = appearance.get("gender", "any")
+        if gender == "any":
+            # Default based on role
+            if role in ["judge", "prosecutor", "lawyer"]:
+                gender = "male"  # Default to male for authoritative roles
+            else:
+                gender = "any"
+
+        # Extract age range
+        age_range = appearance.get("age_range", template.get("appearance", {}).get("age_range", "30-50"))
+
+        # Extract tone adjectives from personality traits
+        personality_traits = template.get("personality_traits", ["neutral"])
+        tone_adjectives = [trait for trait in personality_traits if trait in [
+            "stern", "authoritative", "nervous", "defensive", "emotional", "anxious",
+            "confident", "articulate", "aggressive", "methodical", "hesitant"
+        ]]
+        if not tone_adjectives:
+            tone_adjectives = ["neutral"]
+
+        # Generate example text based on role and personality
+        example_texts = {
+            "judge": "The court will now proceed with the verdict.",
+            "defendant": "I can't believe this is happening to me.",
+            "lawyer": "Your honor, I must object to this line of questioning.",
+            "prosecutor": "The evidence clearly shows the defendant's guilt.",
+            "witness": "I saw what happened that night, I'm sure of it.",
+        }
+        example_text = example_texts.get(role, "This is a statement from the character.")
+
+        return CharacterVoiceProfile(
+            gender=gender,
+            age_range=age_range,
+            tone_adjectives=tone_adjectives,
+            example_text=example_text,
+        )
 
     def _generate_name(self, role: str, template: dict, index: int) -> str:
         """Generate a unique name for the character."""

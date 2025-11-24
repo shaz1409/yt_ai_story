@@ -70,6 +70,96 @@ class TTSClient:
 
         self.logger.info(f"Speech generated: {output_path}")
 
+    def generate_character_voice(
+        self,
+        character_voice_profile: Any,
+        text: str,
+        output_path: Path,
+    ) -> None:
+        """
+        Generate character voice using detailed voice profile.
+
+        Maps voice_profile to voice preset if ElevenLabs available.
+        Else uses OpenAI TTS with style tokens from the profile.
+
+        Args:
+            character_voice_profile: CharacterVoiceProfile object with gender, age_range, tone_adjectives
+            text: Text to convert to speech
+            output_path: Path to save audio file
+
+        Raises:
+            Exception: If generation fails
+        """
+        if not text or not text.strip():
+            raise ValueError("Text cannot be empty")
+
+        self.logger.info(
+            f"Generating character voice: {character_voice_profile.gender}, "
+            f"{character_voice_profile.age_range}, tones: {character_voice_profile.tone_adjectives}"
+        )
+
+        # Map detailed voice profile to voice_id
+        voice_id = self._map_detailed_voice_profile_to_id(character_voice_profile)
+
+        if self.provider == "elevenlabs":
+            self._generate_elevenlabs(text, output_path, voice_id)
+        elif self.provider == "openai":
+            self._generate_openai(text, output_path, voice_id)
+        else:
+            self._generate_stub(text, output_path)
+
+        self.logger.info(f"Character voice generated: {output_path}")
+
+    def _map_detailed_voice_profile_to_id(self, voice_profile: Any) -> Optional[str]:
+        """
+        Map detailed voice profile to provider-specific voice ID.
+
+        Args:
+            voice_profile: CharacterVoiceProfile object
+
+        Returns:
+            Voice ID if mapping exists, None otherwise
+        """
+        if not voice_profile:
+            return None
+
+        gender = voice_profile.gender.lower()
+        age_range = voice_profile.age_range
+        tone_adjectives = [t.lower() for t in voice_profile.tone_adjectives]
+
+        # Extract age from range (e.g., "50-70" -> 50)
+        try:
+            age_start = int(age_range.split("-")[0])
+        except:
+            age_start = 30  # Default
+
+        # OpenAI TTS voice mapping based on gender and age
+        if self.provider == "openai":
+            # OpenAI voices: alloy (neutral), echo (male), fable (male), onyx (deep male),
+            #                nova (young female), shimmer (female)
+            if gender in ["male", "man"]:
+                if age_start >= 50 or "deep" in tone_adjectives or "stern" in tone_adjectives:
+                    return "onyx"  # Deep male voice
+                elif "authoritative" in tone_adjectives:
+                    return "echo"  # Authoritative male
+                else:
+                    return "fable"  # Standard male
+            elif gender in ["female", "woman"]:
+                if age_start < 30 or "young" in tone_adjectives:
+                    return "nova"  # Young female voice
+                else:
+                    return "shimmer"  # Mature female
+            else:
+                return "alloy"  # Neutral
+
+        # ElevenLabs: Use default voice_id from settings (could be enhanced with voice cloning)
+        elif self.provider == "elevenlabs":
+            # For now, use default voice_id from settings
+            # In future, could use voice cloning API to create character-specific voices
+            return None
+
+        return None
+
     def _map_voice_profile_to_id(self, voice_profile: str) -> Optional[str]:
         """
         Map a voice profile string to a provider-specific voice ID.

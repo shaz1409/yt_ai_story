@@ -37,7 +37,8 @@ class EpisodeRepository:
         file_path = self.storage_path / f"{video_plan.episode_id}.json"
 
         # Convert to dict and save as JSON
-        plan_dict = video_plan.model_dump()
+        # Use mode='json' to serialize datetime objects to ISO format strings
+        plan_dict = video_plan.model_dump(mode='json')
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(plan_dict, f, indent=2, ensure_ascii=False)
 

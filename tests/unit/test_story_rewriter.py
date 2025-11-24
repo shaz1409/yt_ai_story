@@ -21,7 +21,7 @@ def test_rewrite_story(story_rewriter):
     title = "Teen Laughs in Court"
     duration = 60
 
-    script = story_rewriter.rewrite_story(raw_text, title, duration)
+    script, pattern_type = story_rewriter.rewrite_story(raw_text, title, duration)
 
     assert script.title == title
     assert script.logline
@@ -43,9 +43,9 @@ def test_rewrite_story_scene_count(story_rewriter):
     title = "Test Story"
 
     # Short duration should produce fewer scenes
-    short_script = story_rewriter.rewrite_story(raw_text, title, 45)
+    short_script, _ = story_rewriter.rewrite_story(raw_text, title, 45)
     # Longer duration should produce more scenes
-    long_script = story_rewriter.rewrite_story(raw_text, title, 90)
+    long_script, _ = story_rewriter.rewrite_story(raw_text, title, 90)
 
     assert len(short_script.scenes) <= len(long_script.scenes)
 

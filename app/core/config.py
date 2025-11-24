@@ -47,20 +47,16 @@ class Settings(BaseSettings):
     # ========================================================================
     # Image Generation Settings
     # ========================================================================
-    huggingface_token: Optional[str] = Field(
-        default=None, description="Hugging Face token for image generation (optional, improves rate limits)"
-    )
-    hf_image_model_primary: Optional[str] = Field(
+    hf_endpoint_url: Optional[str] = Field(
         default=None,
-        description="Primary Hugging Face image model to try first (overrides default list, set via HF_IMAGE_MODEL_PRIMARY env var)",
+        description="Hugging Face Inference Endpoint URL (required for image generation, e.g., https://xxx.eu.endpoints.huggingface.cloud). Set via HF_ENDPOINT_URL env var.",
     )
-    hf_image_models: list[str] = Field(
-        default_factory=lambda: [
-            "stabilityai/stable-diffusion-xl-base-1.0",
-            "stabilityai/sdxl-turbo",
-            "runwayml/stable-diffusion-v1-5",  # Fallback option
-        ],
-        description="List of Hugging Face image models to try in order (fallback if primary fails). Note: Some models may return 410 (Gone) if they no longer support Inference API.",
+    hf_endpoint_token: Optional[str] = Field(
+        default=None,
+        description="Hugging Face Inference Endpoint token (required for image generation). Set via HF_ENDPOINT_TOKEN env var.",
+    )
+    huggingface_token: Optional[str] = Field(
+        default=None, description="Hugging Face token (legacy, kept for backward compatibility)"
     )
 
     # ========================================================================
@@ -71,6 +67,10 @@ class Settings(BaseSettings):
     )
     max_talking_head_lines_per_video: int = Field(
         default=3, description="Maximum number of dialogue lines to animate per video (default: 3)"
+    )
+    character_image_style: str = Field(
+        default="photorealistic",
+        description="Character image style: 'photorealistic' (ultra-realistic) or 'artistic' (legacy style)",
     )
 
     # ========================================================================
@@ -114,6 +114,11 @@ class Settings(BaseSettings):
     use_llm_for_metadata: bool = Field(default=True, description="Use LLM for metadata generation (titles, descriptions) (default: true)")
     dialogue_model: str = Field(default="gpt-4o-mini", description="LLM model for dialogue and metadata generation")
     max_dialogue_lines_per_scene: int = Field(default=2, description="Maximum dialogue lines per scene (default: 2)")
+    use_optimisation: bool = Field(
+        default=False,
+        validation_alias="USE_OPTIMISATION",
+        description="Enable optimisation features (default: false)",
+    )
 
     # ========================================================================
     # Storage Settings

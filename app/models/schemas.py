@@ -1,5 +1,6 @@
 """Pydantic models and schemas for the story generation pipeline."""
 
+from datetime import datetime
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -48,6 +49,15 @@ class ViralityScore(BaseModel):
 # ============================================================================
 
 
+class Beat(BaseModel):
+    """A story beat in the narrative structure."""
+
+    type: str = Field(..., description="Beat type: HOOK, TRIGGER, CONTEXT, CLASH, TWIST, CTA")
+    speaker: str = Field(..., description="Speaker: 'narrator' or character_id")
+    target_emotion: str = Field(..., description="Target emotion: rage, injustice, shock, disgust")
+    text: str = Field(..., description="Beat text content")
+
+
 class NarrationLine(BaseModel):
     """A single line of narration."""
 
@@ -86,6 +96,15 @@ class StoryScript(BaseModel):
 # ============================================================================
 
 
+class CharacterVoiceProfile(BaseModel):
+    """Detailed voice profile for character TTS generation."""
+
+    gender: str = Field(..., description="Gender (male, female, any)")
+    age_range: str = Field(..., description="Age range (e.g., '18-25', '50-70')")
+    tone_adjectives: list[str] = Field(default_factory=list, description="Tone adjectives (e.g., 'stern', 'nervous', 'authoritative')")
+    example_text: Optional[str] = Field(default=None, description="Example reference text for voice matching")
+
+
 class Character(BaseModel):
     """A character in the story."""
 
@@ -95,6 +114,9 @@ class Character(BaseModel):
     appearance: dict[str, Any] = Field(default_factory=dict, description="Physical appearance details")
     personality: str = Field(..., description="Personality description")
     voice_profile: str = Field(..., description="Voice profile for TTS (e.g., 'deep male', 'young female')")
+    detailed_voice_profile: Optional[CharacterVoiceProfile] = Field(
+        default=None, description="Detailed voice profile with gender, age, tone (for character speech)"
+    )
 
 
 class CharacterSet(BaseModel):
@@ -137,8 +159,74 @@ class NarrationPlan(BaseModel):
 
 
 # ============================================================================
+# Episode Metadata Models
+# ============================================================================
+
+
+class EpisodeMetadata(BaseModel):
+    """Metadata about an episode for analytics and tracking."""
+
+    niche: str = Field(..., description="Story niche (e.g., 'courtroom', 'relationship_drama')")
+    pattern_type: str = Field(..., description="Story pattern type")
+    primary_emotion: str = Field(..., description="Primary emotion of the story")
+    secondary_emotion: Optional[str] = Field(default=None, description="Secondary emotion if applicable")
+    topics: list[str] = Field(default_factory=list, description="List of topics/tags")
+    moral_axes: list[str] = Field(default_factory=list, description="Moral dimensions explored")
+
+    num_beats: int = Field(..., description="Number of story beats")
+    num_scenes: int = Field(..., description="Number of scenes")
+    num_dialogue_lines: int = Field(..., description="Total number of dialogue lines")
+    num_narration_lines: int = Field(..., description="Total number of narration lines")
+    has_twist: bool = Field(..., description="Whether the story has a twist")
+    has_cta: bool = Field(..., description="Whether the story has a call-to-action")
+
+    style: str = Field(..., description="Story style (e.g., 'courtroom_drama')")
+    hf_model: Optional[str] = Field(default=None, description="Hugging Face model used for image generation")
+    tts_provider: Optional[str] = Field(default=None, description="TTS provider used (e.g., 'elevenlabs', 'openai')")
+    llm_model_story: Optional[str] = Field(default=None, description="LLM model used for story generation")
+    llm_model_dialogue: Optional[str] = Field(default=None, description="LLM model used for dialogue generation")
+    talking_heads_enabled: bool = Field(default=True, description="Whether talking heads were enabled")
+
+    video_duration_sec: Optional[float] = Field(default=None, description="Actual video duration in seconds")
+    audio_duration_sec: Optional[float] = Field(default=None, description="Actual audio duration in seconds")
+    num_broll_clips: Optional[int] = Field(default=None, description="Number of B-roll clips used")
+    num_talking_head_clips: Optional[int] = Field(default=None, description="Number of talking head clips used")
+
+    youtube_video_id: Optional[str] = Field(default=None, description="YouTube video ID if published")
+    published_at: Optional[datetime] = Field(default=None, description="Publication timestamp")
+    published_hour_local: Optional[int] = Field(default=None, description="Publication hour in local timezone (0-23)")
+    planned_publish_at: Optional[datetime] = Field(default=None, description="Scheduled publish time (set before upload)")
+
+    views_24h: Optional[int] = Field(default=None, description="Views in first 24 hours")
+    likes_24h: Optional[int] = Field(default=None, description="Likes in first 24 hours")
+    comments_24h: Optional[int] = Field(default=None, description="Comments in first 24 hours")
+    avg_view_duration_24h: Optional[float] = Field(default=None, description="Average view duration in first 24 hours (seconds)")
+    avg_view_percent_24h: Optional[float] = Field(default=None, description="Average view percentage in first 24 hours (0-100)")
+    edit_pattern: Optional[str] = Field(default=None, description="Edit pattern/visual style for this episode (talking_head_heavy, broll_cinematic, mixed_rapid)")
+
+
+# ============================================================================
 # Video Plan Engine Models
 # ============================================================================
+
+
+class CharacterSpokenLine(BaseModel):
+    """A line that should be spoken by a character (not narrator)."""
+
+    character_id: str = Field(..., description="Character ID who will speak this line")
+    line_text: str = Field(..., description="Text to be spoken by the character")
+    emotion: str = Field(default="neutral", description="Emotion for the line")
+    scene_id: int = Field(..., description="Scene ID where this line appears")
+    approx_timing_seconds: float = Field(default=0.0, description="Approximate timing in seconds from scene start")
+
+
+class BrollScene(BaseModel):
+    """A B-roll scene for cinematic context."""
+
+    category: str = Field(..., description="B-roll category: establishing_scene, mid_shot, emotional_closeup, dramatic_insert")
+    prompt: str = Field(..., description="Photorealistic prompt for this B-roll scene")
+    timing_hint: float = Field(default=0.0, description="Approximate timing in seconds from video start")
+    scene_id: int = Field(..., description="Associated scene ID")
 
 
 class VideoScene(BaseModel):
@@ -150,7 +238,11 @@ class VideoScene(BaseModel):
     camera_style: str = Field(default="medium_shot", description="Camera style (close_up, medium_shot, wide_shot, etc.)")
     narration: list[NarrationLine] = Field(default_factory=list, description="Narration lines for this scene")
     dialogue: list[DialogueLine] = Field(default_factory=list, description="Dialogue lines for this scene")
-    b_roll_prompts: list[str] = Field(default_factory=list, description="Optional B-roll image prompts")
+    b_roll_prompts: list[str] = Field(default_factory=list, description="Optional B-roll image prompts (legacy)")
+    b_roll_scenes: list[BrollScene] = Field(default_factory=list, description="Cinematic B-roll scenes for this video scene")
+    character_spoken_lines: list[CharacterSpokenLine] = Field(
+        default_factory=list, description="Lines that should be spoken by characters (not narrator)"
+    )
 
 
 class VideoPlan(BaseModel):
@@ -167,10 +259,19 @@ class VideoPlan(BaseModel):
     logline: str = Field(..., description="One-line summary")
     characters: list[Character] = Field(..., description="All characters in this episode")
     scenes: list[VideoScene] = Field(..., description="All video scenes")
+    character_spoken_lines: list[CharacterSpokenLine] = Field(
+        default_factory=list, description="Lines that should be spoken by characters (sampled from dialogue, 2-4 per video)"
+    )
+    b_roll_scenes: list[BrollScene] = Field(
+        default_factory=list, description="Cinematic B-roll scenes for the entire video (4-6 scenes)"
+    )
 
     # Generation metadata
     created_at: Optional[str] = Field(default=None, description="Creation timestamp")
     version: str = Field(default="1.0", description="Plan version")
+    
+    # Episode metadata (optional for backward compatibility)
+    metadata: Optional[EpisodeMetadata] = Field(default=None, description="Episode metadata for analytics and tracking")
 
 
 # ============================================================================

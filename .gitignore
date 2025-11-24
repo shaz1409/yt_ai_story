@@ -7,6 +7,7 @@ outputs/
 # Python
 __pycache__/
 *.py[cod]
+*.pyo
 *$py.class
 *.so
 .Python
@@ -45,7 +46,13 @@ Thumbs.db
 
 # Secrets
 secrets/
+secrets/*.json
 *.json
 !package.json
 !package-lock.json
+
+# Logs
+*.log
+
+# Note: storage/episodes/ is NOT ignored - episode JSON files should be tracked
 

@@ -121,21 +121,26 @@ Requirements:
 - Match character personality and role EXACTLY
 - Focus on EMOTION and CONFLICT - make it feel real and dramatic
 - Lines should be believable but heightened for drama
-- For hook scenes: start with something shocking or unexpected
-- For conflict scenes: emphasize confrontation and high stakes
-- For twist scenes: reveal something that changes everything
-- Avoid cheesy Reddit-style over-explaining
-- Keep it YouTube-safe but emotionally sharp
+- CRITICAL: Do NOT restate the narrator's sentences. Instead, write what the characters would actually say or shout in that moment.
+- Characters should react emotionally to the described events, not repeat them.
 
-Return as JSON array:
-[
-  {{
-    "character_role": "judge",
-    "text": "Short, punchy dialogue line here",
-    "emotion": "stern"
-  }},
-  ...
-]
+Dialogue prioritization:
+- For HOOK scenes: Generate ONE extremely strong line (e.g., from judge/defendant/victim) that grabs attention immediately
+- For CLASH/TWIST scenes: Generate 2-3 lines of back-and-forth dialogue showing confrontation
+- For other scenes: Generate 1-2 lines as needed, but prioritize emotional reactions over exposition
+- Avoid dialogue that simply repeats narration text
+
+Return as JSON object with "dialogue" key containing an array:
+{{
+  "dialogue": [
+    {{
+      "character_role": "judge",
+      "text": "Short, punchy dialogue line here",
+      "emotion": "stern"
+    }},
+    ...
+  ]
+}}
 """
 
         try:

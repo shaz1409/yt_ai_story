@@ -68,7 +68,7 @@ async def generate_story(request: GenerateStoryRequest) -> GenerateStoryResponse
         # Step 2: Rewrite story into script
         logger.info("Step 2: Rewriting story into script...")
         story_rewriter = services["story_rewriter"]
-        story_script = story_rewriter.rewrite_story(
+        story_script, pattern_type = story_rewriter.rewrite_story(
             candidate.raw_text,
             candidate.title,
             request.duration_target_seconds,

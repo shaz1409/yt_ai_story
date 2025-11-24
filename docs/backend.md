@@ -40,6 +40,14 @@ OPENAI_API_KEY=your_key_here
 ANTHROPIC_API_KEY=your_key_here
 TTS_API_KEY=your_key_here
 
+# Hugging Face Image Generation
+# Option 1: Use Inference Endpoint (paid, recommended for production)
+HF_IMAGE_ENDPOINT_URL=https://xxx.eu.endpoints.huggingface.cloud
+
+# Option 2: Use free Inference API (fallback if endpoint URL not set)
+HF_IMAGE_MODEL_PRIMARY=stabilityai/sdxl-turbo
+HF_IMAGE_MODELS=["stabilityai/sdxl-turbo"]  # Must be JSON array
+
 # Application Settings
 DEBUG=false
 LOG_LEVEL=INFO
