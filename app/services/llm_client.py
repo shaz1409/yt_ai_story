@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 from app.core.config import Settings
 from app.core.logging_config import get_logger
+from app.utils.rate_limiter import get_openai_limiter
 
 
 class LLMClient:

@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.core.logging_config import get_logger
 from app.models.schemas import Character, DialogueLine, VideoPlan
 from app.services.hf_endpoint_client import HFEndpointClient
+from app.services.lipsync_provider import get_lipsync_provider
 
 
 class TalkingHeadProvider:
@@ -118,6 +119,17 @@ class CharacterVideoEngine:
         """
         self.settings = settings
         self.logger = logger
+        
+        # Initialize lip-sync provider if available
+        self.lipsync_provider = None
+        if getattr(settings, "use_lipsync", False):
+            self.lipsync_provider = get_lipsync_provider(settings, logger)
+            if self.lipsync_provider:
+                self.logger.info("Lip-sync provider initialized (real mouth movement enabled)")
+            else:
+                self.logger.warning("Lip-sync requested but no provider configured. Falling back to basic talking-head.")
+        
+        # Fallback to basic talking-head provider
         self.talking_head_provider = TalkingHeadProvider(settings, logger)
         
         # Initialize HF Endpoint client for image generation
@@ -246,14 +258,60 @@ class CharacterVideoEngine:
 
         # Generate talking-head clip with fallback
         try:
-            # Use existing talking head provider (Ken Burns + zoom effect)
+            # Try lip-sync provider first if available
+            if self.lipsync_provider:
+                try:
+                    self.logger.info(f"Attempting real lip-sync for {character.name}...")
+                    clip_path = self.lipsync_provider.generate_talking_head(face_image_path, audio_path, clip_path)
+                    self.logger.info(f"Generated lip-sync talking-head clip: {clip_path}")
+                    return clip_path
+                except NotImplementedError:
+                    self.logger.warning("Lip-sync provider not fully implemented, falling back to basic talking-head")
+                except Exception as e:
+                    self.logger.warning(f"Lip-sync generation failed: {e}, falling back to basic talking-head")
+            
+            # Fallback to basic talking head provider (Ken Burns + zoom effect)
             self.talking_head_provider.generate_talking_head(face_image_path, audio_path, clip_path)
-            self.logger.info(f"Generated talking-head clip: {clip_path}")
+            self.logger.info(f"Generated basic talking-head clip: {clip_path}")
             return clip_path
         except Exception as e:
             self.logger.warning(f"Talking-head generation failed for {character.name}: {e}, will fallback to scene visual")
             # Return None to signal failure - VideoRenderer will handle fallback
             raise
+
+    def _generate_stable_character_id(self, character: Character) -> str:
+        """
+        Generate a stable character identifier based on role and appearance.
+        
+        This allows the same character (e.g., "Judge Williams") to reuse the same
+        face image across different episodes.
+        
+        Args:
+            character: Character object
+            
+        Returns:
+            Stable character identifier (e.g., "judge_abc123def456")
+        """
+        import hashlib
+        import json
+        
+        # Create hash from role + appearance + personality
+        # Exclude episode-specific fields like "unique_id" from appearance
+        appearance = character.appearance or {}
+        stable_appearance = {k: v for k, v in appearance.items() if k != "unique_id"}
+        
+        stable_data = {
+            "role": character.role.lower(),
+            "appearance": stable_appearance,
+            "personality": character.personality,
+        }
+        
+        # Create deterministic hash
+        stable_json = json.dumps(stable_data, sort_keys=True)
+        stable_hash = hashlib.md5(stable_json.encode()).hexdigest()[:12]
+        
+        stable_id = f"{character.role.lower()}_{stable_hash}"
+        return stable_id
 
     def ensure_character_assets(
         self,
@@ -265,7 +323,9 @@ class CharacterVideoEngine:
         """
         Ensure all main characters have base face images generated.
 
-        Images are saved to outputs/characters/ for better organization.
+        Images are cached by stable character ID (role + appearance hash) to allow
+        reuse across episodes. Same character (e.g., "Judge Williams") will use
+        the same face image.
 
         Args:
             video_plan: VideoPlan with characters
@@ -278,8 +338,11 @@ class CharacterVideoEngine:
         """
         self.logger.info("Ensuring character assets are generated...")
 
-        # Use dedicated characters directory
-        characters_dir = output_dir.parent / "characters" if output_dir.name != "characters" else output_dir
+        # Use dedicated characters directory (global cache)
+        # Store in a shared location so all episodes can reuse faces
+        # Get project root (3 levels up from this file: app/services/character_video_engine.py)
+        project_root = Path(__file__).parent.parent.parent
+        characters_dir = project_root / "outputs" / "characters"
         characters_dir.mkdir(parents=True, exist_ok=True)
 
         # Also keep in character_faces for backward compatibility
@@ -291,15 +354,32 @@ class CharacterVideoEngine:
         # Generate faces for all non-narrator characters
         for character in video_plan.characters:
             if character.role.lower() != "narrator":
-                # Primary location: outputs/characters/
-                face_path = characters_dir / f"character_{character.id}_face.png"
-                # Secondary location: character_faces/ (for backward compatibility)
+                # Generate stable ID for caching
+                stable_id = self._generate_stable_character_id(character)
+                
+                # Primary location: outputs/characters/ (global cache)
+                face_path = characters_dir / f"character_{stable_id}_face.png"
+                # Secondary location: character_faces/ (episode-specific, for backward compatibility)
                 legacy_path = character_faces_dir / f"character_{character.id}_face.png"
 
                 if not face_path.exists():
-                    self.logger.info(f"Generating {image_style} face for character: {character.name}")
+                    self.logger.info(
+                        f"Generating {image_style} face for character: {character.name} "
+                        f"(role: {character.role}, stable_id: {stable_id})"
+                    )
+                    # Generate with stable_id for seed consistency
+                    # Create a temporary character with stable_id for generation
+                    temp_character = Character(
+                        id=stable_id,  # Use stable_id for seed generation
+                        role=character.role,
+                        name=character.name,
+                        appearance=character.appearance,
+                        personality=character.personality,
+                        voice_profile=character.voice_profile,
+                        detailed_voice_profile=character.detailed_voice_profile,
+                    )
                     face_path = self.generate_character_face_image(
-                        character, characters_dir, style, image_style
+                        temp_character, characters_dir, style, image_style
                     )
                     # Also copy to legacy location for backward compatibility
                     if face_path.exists():
@@ -307,11 +387,22 @@ class CharacterVideoEngine:
                         shutil.copy2(face_path, legacy_path)
                         self.logger.debug(f"Copied character image to legacy location: {legacy_path}")
                 else:
-                    self.logger.debug(f"Character face already exists: {character.name}")
+                    self.logger.info(
+                        f"Reusing cached face for character: {character.name} "
+                        f"(role: {character.role}, stable_id: {stable_id})"
+                    )
+                    # Copy cached face to legacy location for this episode
+                    if face_path.exists() and not legacy_path.exists():
+                        import shutil
+                        shutil.copy2(face_path, legacy_path)
+                        self.logger.debug(f"Copied cached face to legacy location: {legacy_path}")
 
                 character_assets[character.id] = face_path
 
-        self.logger.info(f"Ensured {len(character_assets)} character face images in {characters_dir}")
+        self.logger.info(
+            f"Ensured {len(character_assets)} character face images "
+            f"(cached in {characters_dir})"
+        )
         return character_assets
 
     def _build_character_face_prompt(

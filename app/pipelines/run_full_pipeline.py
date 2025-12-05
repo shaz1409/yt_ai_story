@@ -224,6 +224,11 @@ def main():
         help="Preview mode: generate and render video but do not upload to YouTube",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Dry-run mode: generate VideoPlan and log what would happen, but skip rendering and upload (for testing)",
+    )
+    parser.add_argument(
         "--auto-upload",
         action="store_true",
         help="Automatically upload video to YouTube after rendering (requires explicit flag)",
@@ -281,6 +286,11 @@ def main():
         default=None,
         help="Target date for scheduling (YYYY-MM-DD). Defaults to today if not provided.",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from last checkpoint if pipeline failed (experimental)",
+    )
 
     args = parser.parse_args()
 
@@ -302,6 +312,8 @@ def main():
     # Validate mutually exclusive flags
     if args.preview and args.auto_upload:
         parser.error("--preview and --auto-upload are mutually exclusive. Use --preview to generate without upload.")
+    if args.dry_run and (args.preview or args.auto_upload):
+        parser.error("--dry-run is mutually exclusive with --preview and --auto-upload. Dry-run skips rendering and upload.")
 
     # Validate arguments
     # Allow no topic if optimisation is enabled
@@ -343,7 +355,9 @@ def main():
     logger.info(f"Style: {args.style}")
     logger.info(f"Duration: {args.duration_target_seconds}s")
     logger.info(f"Batch count: {args.batch_count}")
-    if args.preview:
+    if args.dry_run:
+        logger.info("Mode: DRY-RUN (generate VideoPlan only, no rendering/upload)")
+    elif args.preview:
         logger.info("Mode: PREVIEW (no upload)")
     elif args.auto_upload:
         logger.info("Mode: AUTO-UPLOAD (will upload to YouTube)")
@@ -360,15 +374,27 @@ def main():
 
         # Initialize repository
         repository = EpisodeRepository(settings, logger)
+        
+        # Initialize analytics service
+        analytics_service = AnalyticsService(settings, logger)
+        
+        # Initialize checkpoint manager if resume is enabled
+        checkpoint_manager = None
+        if args.resume:
+            checkpoint_manager = CheckpointManager(settings, logger)
+            logger.info("Resume mode enabled - will save checkpoints and can resume on failure")
 
         # Initialize schedule manager if daily mode is enabled
         schedule_manager = None
         scheduled_slots = []
         if args.daily_mode:
-            # Default timezone (can be made configurable later)
-            timezone_str = getattr(settings, "timezone", "Europe/London")
-            schedule_manager = ScheduleManager(timezone=timezone_str)
+            # Use configurable timezone and posting hours from settings
+            timezone_str = settings.timezone
+            posting_hours = settings.daily_posting_hours
+            schedule_manager = ScheduleManager(timezone=timezone_str, posting_hours=posting_hours)
             scheduled_slots = schedule_manager.get_daily_slots(target_date, args.batch_count)
+            logger.info(f"Using timezone: {timezone_str}")
+            logger.info(f"Using posting hours: {posting_hours}")
             logger.info("=" * 60)
             logger.info("SCHEDULING: Assigned time slots")
             logger.info("=" * 60)
@@ -511,34 +537,75 @@ def main():
                     repository.save_episode(video_plan)
                     logger.info("Saved episode with scheduled publish time")
 
-                # Step 2: Render video
-                logger.info("=" * 60)
-                logger.info("PHASE 2: Video Rendering")
-                logger.info("=" * 60)
+                # Step 2: Render video (skip in dry-run mode)
+                video_path = None
                 
-                # Organize output directory
-                if args.preview:
-                    output_base = Path(args.output_dir) / "preview"
+                # Check for resume checkpoint
+                if checkpoint_manager and checkpoint_manager.has_checkpoint(episode_id, CheckpointManager.STAGE_VIDEO_RENDERED):
+                    logger.info(f"Resuming from checkpoint: {episode_id} at video_rendered stage")
+                    checkpoint_data = checkpoint_manager.load_checkpoint(episode_id, CheckpointManager.STAGE_VIDEO_RENDERED)
+                    if checkpoint_data and checkpoint_data.get("video_path"):
+                        video_path = Path(checkpoint_data["video_path"])
+                        if video_path.exists():
+                            logger.info(f"Using cached video from checkpoint: {video_path}")
+                        else:
+                            logger.warning("Checkpoint video path not found, re-rendering...")
+                            video_path = None
+                
+                if args.dry_run:
+                    logger.info("=" * 60)
+                    logger.info("DRY-RUN MODE - Skipping video rendering")
+                    logger.info("=" * 60)
+                    logger.info("VideoPlan generated successfully:")
+                    logger.info(f"  Episode ID: {episode_id}")
+                    logger.info(f"  Title: {video_plan.title}")
+                    logger.info(f"  Scenes: {len(video_plan.scenes)}")
+                    logger.info(f"  Characters: {len(video_plan.characters)}")
+                    logger.info(f"  Duration target: {video_plan.metadata.duration_target_seconds if video_plan.metadata else 'N/A'}s")
+                    if video_plan.character_spoken_lines:
+                        logger.info(f"  Character spoken lines: {len(video_plan.character_spoken_lines)}")
+                    if video_plan.b_roll_scenes:
+                        logger.info(f"  B-roll scenes: {len(video_plan.b_roll_scenes)}")
+                    logger.info("=" * 60)
+                    logger.info("DRY-RUN complete - no video rendered, no upload performed")
                 else:
-                    output_base = Path(args.output_dir) / "videos"
-                
-                # Create episode-specific subdirectory
-                from app.utils.io_utils import slugify
-                topic_slug = slugify(selected_topic or video_plan.title)
-                episode_output_dir = output_base / f"{episode_id}_{topic_slug}"
-                
-                video_renderer = VideoRenderer(settings, logger)
-                video_path = video_renderer.render(video_plan, episode_output_dir)
+                    logger.info("=" * 60)
+                    logger.info("PHASE 2: Video Rendering")
+                    logger.info("=" * 60)
+                    
+                    # Organize output directory
+                    if args.preview:
+                        output_base = Path(args.output_dir) / "preview"
+                    else:
+                        output_base = Path(args.output_dir) / "videos"
+                    
+                    # Create episode-specific subdirectory
+                    from app.utils.io_utils import slugify
+                    topic_slug = slugify(selected_topic or video_plan.title)
+                    episode_output_dir = output_base / f"{episode_id}_{topic_slug}"
+                    
+                    if not video_path:
+                        video_renderer = VideoRenderer(settings, logger)
+                        video_path = video_renderer.render(video_plan, episode_output_dir)
+                        logger.info(f"Video rendered: {video_path}")
+                        
+                        # Save checkpoint
+                        if checkpoint_manager:
+                            checkpoint_manager.save_checkpoint(
+                                episode_id,
+                                CheckpointManager.STAGE_VIDEO_RENDERED,
+                                {"video_path": str(video_path)},
+                            )
+                    else:
+                        logger.info(f"Using video from checkpoint: {video_path}")
+                    
+                    # Re-save episode with updated metadata (now includes rendering info)
+                    logger.info("Saving updated episode with rendering metadata...")
+                    repository.save_episode(video_plan)
 
-                logger.info(f"Video rendered: {video_path}")
-                
-                # Re-save episode with updated metadata (now includes rendering info)
-                logger.info("Saving updated episode with rendering metadata...")
-                repository.save_episode(video_plan)
-
-                # Step 3: Upload to YouTube (only if --auto-upload and not --preview)
+                # Step 3: Upload to YouTube (only if --auto-upload and not --preview and not --dry-run)
                 youtube_url = None
-                should_upload = args.auto_upload and not args.preview
+                should_upload = args.auto_upload and not args.preview and not args.dry_run
                 
                 # Get scheduled publish time from metadata if set
                 scheduled_publish_at = None
@@ -584,6 +651,17 @@ def main():
                                 # Set published_hour_local from scheduled time
                                 video_plan.metadata.published_hour_local = scheduled_publish_at.hour
                             logger.info(f"Updated metadata with YouTube video ID: {video_id}")
+                            
+                            # Record in analytics
+                            analytics_service.record_video_upload(
+                                episode_id=episode_id,
+                                youtube_video_id=video_id,
+                                title=title,
+                                niche=video_plan.metadata.niche if video_plan.metadata else None,
+                                style=video_plan.style,
+                                published_at=scheduled_publish_at or datetime.now(),
+                            )
+                            logger.info(f"Recorded video in analytics: {episode_id}")
                     
                     # Re-save episode with YouTube metadata
                     logger.info("Saving episode with YouTube upload metadata...")
@@ -600,7 +678,10 @@ def main():
                 logger.info(f"PIPELINE COMPLETE{' (Batch ' + str(batch_item) + '/' + str(num_iterations) + ')' if num_iterations > 1 else ''}!")
                 logger.info("=" * 60)
                 logger.info(f"Episode ID: {episode_id}")
-                logger.info(f"Video: {video_path.absolute()}")
+                if args.dry_run:
+                    logger.info("DRY-RUN MODE - VideoPlan generated, no video rendered")
+                elif video_path:
+                    logger.info(f"Video: {video_path.absolute()}")
                 if youtube_url:
                     logger.info(f"YouTube URL: {youtube_url}")
                 elif args.preview:

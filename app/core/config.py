@@ -74,6 +74,43 @@ class Settings(BaseSettings):
     )
 
     # ========================================================================
+    # Lip-Sync Settings (Optional)
+    # ========================================================================
+    did_api_key: Optional[str] = Field(
+        default=None, description="D-ID API key for real lip-sync talking-heads (optional)"
+    )
+    did_api_url: str = Field(
+        default="https://api.d-id.com", description="D-ID API URL (default: https://api.d-id.com)"
+    )
+    heygen_api_key: Optional[str] = Field(
+        default=None, description="HeyGen API key for real lip-sync talking-heads (optional)"
+    )
+    heygen_api_url: str = Field(
+        default="https://api.heygen.com", description="HeyGen API URL (default: https://api.heygen.com)"
+    )
+    use_lipsync: bool = Field(
+        default=False,
+        description="Enable real lip-sync for talking-heads (requires D-ID or HeyGen API key)",
+    )
+
+    # ========================================================================
+    # Rate Limiting Settings
+    # ========================================================================
+    enable_rate_limiting: bool = Field(
+        default=True,
+        description="Enable rate limiting for API calls to prevent hitting limits (default: true)",
+    )
+    openai_rate_limit: int = Field(
+        default=60, description="OpenAI API calls per minute (default: 60)"
+    )
+    hf_rate_limit: int = Field(
+        default=30, description="Hugging Face API calls per minute (default: 30)"
+    )
+    elevenlabs_rate_limit: int = Field(
+        default=100, description="ElevenLabs API calls per minute (default: 100)"
+    )
+
+    # ========================================================================
     # YouTube Upload Settings
     # ========================================================================
     youtube_client_secrets_file: Optional[str] = Field(
@@ -85,6 +122,18 @@ class Settings(BaseSettings):
     youtube_api_scopes: list[str] = Field(
         default=["https://www.googleapis.com/auth/youtube.upload"],
         description="YouTube API scopes",
+    )
+
+    # ========================================================================
+    # Scheduling Settings
+    # ========================================================================
+    timezone: str = Field(
+        default="Europe/London",
+        description="Timezone for scheduling (e.g., 'Europe/London', 'America/New_York', 'America/Los_Angeles')",
+    )
+    daily_posting_hours: list[int] = Field(
+        default=[11, 14, 18, 20, 22],
+        description="Posting hours in local time for daily batch mode (24-hour format, e.g., [11, 14, 18, 20, 22])",
     )
 
     # ========================================================================

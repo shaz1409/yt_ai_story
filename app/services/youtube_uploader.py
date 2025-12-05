@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from app.core.config import Settings
 from app.core.logging_config import get_logger
+from app.utils.error_handler import format_error_message, get_fallback_suggestion
 
 
 class YouTubeUploader:

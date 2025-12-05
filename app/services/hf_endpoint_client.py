@@ -10,6 +10,8 @@ from PIL import Image
 
 from app.core.config import Settings
 from app.core.logging_config import get_logger
+from app.utils.error_handler import format_error_message, get_fallback_suggestion
+from app.utils.rate_limiter import get_hf_limiter
 
 
 class HFEndpointClient:
@@ -113,6 +115,14 @@ class HFEndpointClient:
             # }
 
         try:
+            # Apply rate limiting
+            if getattr(self.settings, "enable_rate_limiting", True):
+                limiter = get_hf_limiter(
+                    max_calls=getattr(self.settings, "hf_rate_limit", 30),
+                    time_window=60.0
+                )
+                limiter.wait_if_needed("image_generation")
+            
             response = requests.post(
                 self.endpoint_url,
                 json=payload,

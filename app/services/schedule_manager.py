@@ -18,19 +18,27 @@ except ImportError:
 
 
 class ScheduleManager:
-    """Manages daily posting schedule with hardcoded time slots."""
+    """Manages daily posting schedule with configurable time slots."""
 
-    # Hardcoded posting hours in local time
-    POSTING_HOURS = [11, 14, 18, 20, 22]
-
-    def __init__(self, timezone: str = "Europe/London"):
+    def __init__(self, timezone: str = "Europe/London", posting_hours: Optional[list[int]] = None):
         """
         Initialize schedule manager.
 
         Args:
             timezone: Timezone string (e.g., "Europe/London", "America/New_York")
+            posting_hours: List of posting hours in local time (24-hour format, e.g., [11, 14, 18, 20, 22]).
+                          Defaults to [11, 14, 18, 20, 22] if not provided.
         """
         self.timezone_str = timezone
+        self.posting_hours = posting_hours or [11, 14, 18, 20, 22]
+        
+        # Validate posting hours
+        if not self.posting_hours:
+            raise ValueError("posting_hours cannot be empty")
+        for hour in self.posting_hours:
+            if not isinstance(hour, int) or hour < 0 or hour > 23:
+                raise ValueError(f"Invalid posting hour: {hour}. Must be integer between 0-23.")
+        
         if ZoneInfo is not None:
             # Python 3.9+ with zoneinfo
             try:
@@ -64,8 +72,8 @@ class ScheduleManager:
 
         while len(slots) < count:
             # Cycle through posting hours
-            hour_index = hours_used % len(self.POSTING_HOURS)
-            hour = self.POSTING_HOURS[hour_index]
+            hour_index = hours_used % len(self.posting_hours)
+            hour = self.posting_hours[hour_index]
 
             # Create datetime in the target timezone
             local_time = datetime.combine(target_date, time(hour=hour, minute=0, second=0))

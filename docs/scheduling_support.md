@@ -159,24 +159,30 @@ python run_full_pipeline.py --topic "story topic" --auto-upload
 
 Default timezone is `Europe/London`. To change:
 
-1. **Via code:** Modify `ScheduleManager` initialization in `run_full_pipeline.py`:
-   ```python
-   timezone_str = getattr(settings, "timezone", "America/New_York")
-   schedule_manager = ScheduleManager(timezone=timezone_str)
-   ```
+**Via environment variable (recommended):**
+```bash
+# In .env file
+TIMEZONE=America/New_York
+```
 
-2. **Via config:** Add to `app/core/config.py`:
-   ```python
-   timezone: str = Field(default="Europe/London", description="Timezone for scheduling")
-   ```
+**Supported timezones:**
+- `Europe/London` (default)
+- `America/New_York`
+- `America/Los_Angeles`
+- `America/Chicago`
+- Any valid IANA timezone string
 
 ### Posting Hours
 
-To change posting hours, modify `ScheduleManager.POSTING_HOURS` in `app/services/schedule_manager.py`:
+Default posting hours are `[11, 14, 18, 20, 22]` (11 AM, 2 PM, 6 PM, 8 PM, 10 PM).
 
-```python
-POSTING_HOURS = [9, 12, 15, 18, 21]  # Custom hours
+**Via environment variable:**
+```bash
+# In .env file (comma-separated, 24-hour format)
+DAILY_POSTING_HOURS=9,12,15,18,21
 ```
+
+**Note:** The system will cycle through these hours if you generate more videos than available slots. For example, with 5 hours and 7 videos, it will use: 9, 12, 15, 18, 21, 9, 12.
 
 ---
 

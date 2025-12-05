@@ -7,6 +7,7 @@ import requests
 
 from app.core.config import Settings
 from app.core.logging_config import get_logger
+from app.utils.rate_limiter import get_elevenlabs_limiter, get_openai_limiter
 
 
 class TTSClient:
@@ -243,6 +244,14 @@ class TTSClient:
 
         if not self.settings.openai_api_key:
             raise ValueError("OpenAI API key not configured")
+
+        # Apply rate limiting
+        if getattr(self.settings, "enable_rate_limiting", True):
+            limiter = get_openai_limiter(
+                max_calls=getattr(self.settings, "openai_rate_limit", 60),
+                time_window=60.0
+            )
+            limiter.wait_if_needed("tts")
 
         client = OpenAI(api_key=self.settings.openai_api_key)
 

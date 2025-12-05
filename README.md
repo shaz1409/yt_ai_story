@@ -6,9 +6,15 @@ An automated pipeline for generating viral YouTube Shorts from story topics. The
 
 - **Auto Story Selection**: Automatically finds and scores high-virality stories from niches (courtroom, relationship_drama, injustice, etc.)
 - **Emotional Narrative Arcs**: Generates stories with HOOK → SETUP → CONFLICT → TWIST → RESOLUTION structure
-- **Photoreal Character Animations**: Talking-head clips for key dialogue lines (Option B architecture)
+- **Photoreal Character Animations**: Talking-head clips for key dialogue lines with optional lip-sync (D-ID/HeyGen)
+- **Character Consistency**: Same character faces reused across episodes via intelligent caching
+- **Cinematic B-Roll**: Contextual, emotion-aware scene visuals with Ken Burns effects
 - **Multi-Style Support**: Courtroom drama, ragebait, relationship drama
 - **Full Pipeline**: Topic → Story → VideoPlan → Rendered Video → YouTube Upload
+- **Daily Batch Scheduling**: Automated daily batches with configurable time slots
+- **Resume on Failure**: Checkpoint system to resume from last successful step
+- **Rate Limiting**: Automatic throttling to prevent API rate limit errors
+- **Analytics Tracking**: Performance metrics for video optimization
 - **Modular Architecture**: Clean, extensible services ready for production
 
 ## 🚀 Quick Start
@@ -62,6 +68,21 @@ All configuration is done via environment variables. See `.env.example` for a co
 - `USE_TALKING_HEADS` - Enable character animations
 - `USE_LLM_FOR_DIALOGUE` - Use LLM for dialogue generation (default: true)
 - `USE_LLM_FOR_METADATA` - Use LLM for titles/descriptions (default: true)
+- `USE_LIPSYNC` - Enable real lip-sync for talking-heads (requires D-ID or HeyGen API key)
+- `ENABLE_RATE_LIMITING` - Enable rate limiting for API calls (default: true)
+
+**Rate limiting (optional):**
+- `OPENAI_RATE_LIMIT` - OpenAI calls per minute (default: 60)
+- `HF_RATE_LIMIT` - Hugging Face calls per minute (default: 30)
+- `ELEVENLABS_RATE_LIMIT` - ElevenLabs calls per minute (default: 100)
+
+**Scheduling (optional):**
+- `TIMEZONE` - Timezone for scheduling (default: Europe/London)
+- `DAILY_POSTING_HOURS` - Posting hours in 24-hour format, comma-separated (default: 11,14,18,20,22)
+
+**Lip-sync (optional):**
+- `DID_API_KEY` - D-ID API key for real lip-sync
+- `HEYGEN_API_KEY` - HeyGen API key for real lip-sync
 
 See `.env.example` for the complete list of all environment variables.
 
@@ -105,6 +126,28 @@ python run_full_pipeline.py \
   --date 2025-11-23
 ```
 
+This will:
+- Generate 5 videos using optimisation engine
+- Assign time slots (default: 11:00, 14:00, 18:00, 20:00, 22:00 local time)
+- Upload all videos as scheduled (private until publish time)
+
+**Configure timezone and posting hours:**
+```bash
+# In .env file
+TIMEZONE=America/New_York
+DAILY_POSTING_HOURS=9,12,15,18,21
+```
+
+**Dry-run mode (test without rendering):**
+```bash
+python run_full_pipeline.py --topic "test story" --dry-run
+```
+
+**Resume from checkpoint (if pipeline failed):**
+```bash
+python run_full_pipeline.py --topic "story" --resume
+```
+
 See `python run_full_pipeline.py --help` for all available options.
 
 ## 📖 Documentation
@@ -114,6 +157,9 @@ See `python run_full_pipeline.py --help` for all available options.
 - **[Pipeline Documentation](docs/pipeline.md)** - Full pipeline implementation details
 - **[Story Sourcing](docs/story_sourcing.md)** - Auto story selection and virality scoring
 - **[Quality Audit](docs/quality_audit.md)** - Quality improvements and roadmap
+- **[Today's Features](docs/TODAY_FEATURES_SUMMARY.md)** - Summary of latest features (character caching, dry-run, lip-sync, analytics, etc.)
+- **[Lip-Sync Integration](docs/LIPSYNC_INTEGRATION.md)** - Guide for integrating D-ID/HeyGen
+- **[Scheduling Guide](docs/YOUTUBE_SCHEDULING_ENHANCEMENT.md)** - YouTube scheduling configuration
 
 ## 🏗️ Architecture
 

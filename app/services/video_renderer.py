@@ -12,6 +12,7 @@ if not hasattr(Image, "ANTIALIAS"):
 
 from app.core.config import Settings
 from app.core.logging_config import get_logger
+from app.utils.error_handler import format_error_message, get_fallback_suggestion
 from app.models.schemas import Character, DialogueLine, VideoPlan
 from app.services.character_video_engine import CharacterVideoEngine
 from app.services.hf_endpoint_client import HFEndpointClient
