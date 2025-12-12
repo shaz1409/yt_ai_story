@@ -14,7 +14,9 @@ from app.core.config import Settings
 from app.core.logging_config import get_logger
 from app.models.schemas import Character, DialogueLine, VideoPlan
 from app.services.hf_endpoint_client import HFEndpointClient
+from app.services.image_quality_validator import ImageQualityValidator
 from app.services.lipsync_provider import get_lipsync_provider
+from app.utils.image_post_processor import ImagePostProcessor
 
 
 class TalkingHeadProvider:
@@ -61,8 +63,10 @@ class TalkingHeadProvider:
             image_clip = ImageClip(str(base_image_path))
             image_clip = image_clip.set_duration(duration)
 
-            # Resize to vertical format (1080x1920)
-            target_size = (1080, 1920)
+            # Resize to vertical format
+            video_width = getattr(self.settings, "video_width", 1080)
+            video_height = getattr(self.settings, "video_height", 1920)
+            target_size = (video_width, video_height)
             image_clip = image_clip.resize(target_size)
 
             # Add subtle zoom effect (zoom in from 1.0 to 1.05 over duration)
@@ -122,7 +126,8 @@ class CharacterVideoEngine:
         
         # Initialize lip-sync provider if available
         self.lipsync_provider = None
-        if getattr(settings, "use_lipsync", False):
+        lipsync_enabled = getattr(settings, "lipsync_enabled", False) or getattr(settings, "use_lipsync", False)
+        if lipsync_enabled:
             self.lipsync_provider = get_lipsync_provider(settings, logger)
             if self.lipsync_provider:
                 self.logger.info("Lip-sync provider initialized (real mouth movement enabled)")
@@ -138,6 +143,12 @@ class CharacterVideoEngine:
         except ValueError as e:
             self.logger.warning(f"HF Endpoint not configured: {e}. Will use placeholder images.")
             self.hf_endpoint_client = None
+        
+        # Initialize image quality validator
+        self.image_validator = ImageQualityValidator(settings, logger)
+        
+        # Initialize image post-processor
+        self.image_post_processor = ImagePostProcessor(settings, logger)
 
     def generate_character_face_image(
         self,
@@ -173,21 +184,81 @@ class CharacterVideoEngine:
         # Generate character identity seed from character_id for consistency
         character_seed = self._generate_character_seed(character.id)
 
-        # Generate image with seed locking
-        try:
-            self._generate_character_image(
-                prompt,
-                image_path,
-                seed=character_seed,
-                sharpness=8,
-                realism_level="ultra",
-                film_style="kodak_portra",
-            )
-        except Exception as e:
-            self.logger.error(f"Failed to generate character image: {e}, creating placeholder")
-            self._create_placeholder_character_image(image_path, character)
+        # Generate image with seed locking and quality validation
+        max_attempts = getattr(self.settings, "max_image_retry_attempts", 3)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self._generate_character_image(
+                    prompt,
+                    image_path,
+                    seed=character_seed,
+                    sharpness=8,
+                    realism_level="ultra",
+                    film_style="kodak_portra",
+                )
+                
+                # Validate image quality
+                if image_path.exists():
+                    score = self.image_validator.score_image(image_path, "character_portrait")
+                    if score >= self.image_validator.min_acceptable_score:
+                        self.logger.info(f"✅ Accepted character image with quality score {score:.3f}: {image_path.name}")
+                        
+                        # Post-process image after validation
+                        processed_path = self.image_post_processor.get_processed_path(image_path)
+                        enhanced_path = self.image_post_processor.enhance_image(
+                            image_path, processed_path, "character_portrait"
+                        )
+                        return enhanced_path
+                    else:
+                        self.logger.warning(
+                            f"Image quality score {score:.3f} below threshold "
+                            f"({self.image_validator.min_acceptable_score:.3f})"
+                        )
+                        if attempt < max_attempts:
+                            self.logger.info(f"Regenerating character image (attempt {attempt + 1}/{max_attempts})")
+                            # Vary seed slightly for retry
+                            character_seed = (character_seed + attempt * 1000) % (2**32)
+                            continue
+                        else:
+                            self.logger.warning("Max retries reached, using fallback character image")
+                            break
+                else:
+                    self.logger.warning(f"Generated image not found: {image_path}")
+                    if attempt < max_attempts:
+                        self.logger.info(f"Retrying character image generation (attempt {attempt + 1}/{max_attempts})")
+                        continue
+                    else:
+                        break
+                        
+            except Exception as e:
+                self.logger.error(f"Failed to generate character image (attempt {attempt}/{max_attempts}): {e}")
+                if attempt < max_attempts:
+                    self.logger.info(f"Retrying character image generation (attempt {attempt + 1}/{max_attempts})")
+                    # Vary seed slightly for retry
+                    character_seed = (character_seed + attempt * 1000) % (2**32)
+                    continue
+                else:
+                    break
 
-        return image_path
+        # All attempts failed - use fallback
+        fallback_path = self._get_fallback_character_image(image_path, character)
+        if fallback_path and fallback_path.exists():
+            self.logger.info(f"Using fallback character image: {fallback_path}")
+            # Post-process fallback image
+            processed_path = self.image_post_processor.get_processed_path(fallback_path)
+            enhanced_path = self.image_post_processor.enhance_image(
+                fallback_path, processed_path, "character_portrait"
+            )
+            return enhanced_path
+        else:
+            self.logger.warning("No fallback available, creating placeholder character image")
+            self._create_placeholder_character_image(image_path, character)
+            # Post-process placeholder image
+            processed_path = self.image_post_processor.get_processed_path(image_path)
+            enhanced_path = self.image_post_processor.enhance_image(
+                image_path, processed_path, "character_portrait"
+            )
+            return enhanced_path
 
     def _generate_character_seed(self, character_id: str) -> int:
         """
@@ -387,6 +458,18 @@ class CharacterVideoEngine:
                         shutil.copy2(face_path, legacy_path)
                         self.logger.debug(f"Copied character image to legacy location: {legacy_path}")
                 else:
+                    # Check if processed version exists
+                    processed_path = self.image_post_processor.get_processed_path(face_path)
+                    if processed_path.exists():
+                        face_path = processed_path
+                        self.logger.debug(f"Using cached processed face: {processed_path}")
+                    else:
+                        # Post-process the cached original
+                        enhanced_path = self.image_post_processor.enhance_image(
+                            face_path, processed_path, "character_portrait"
+                        )
+                        face_path = enhanced_path
+                    
                     self.logger.info(
                         f"Reusing cached face for character: {character.name} "
                         f"(role: {character.role}, stable_id: {stable_id})"
@@ -595,6 +678,44 @@ class CharacterVideoEngine:
             self._create_placeholder_character_image(output_path, None, prompt)
 
 
+    def _get_fallback_character_image(
+        self, output_path: Path, character: Optional[Character] = None
+    ) -> Optional[Path]:
+        """
+        Get fallback character image from assets/characters_fallbacks/.
+        
+        Args:
+            output_path: Desired output path (used to determine fallback name)
+            character: Character object (optional, for role-based fallback)
+            
+        Returns:
+            Path to fallback image if found, None otherwise
+        """
+        fallback_dir = Path("assets/characters_fallbacks")
+        if not fallback_dir.exists():
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            self.logger.debug(f"Created fallback directory: {fallback_dir}")
+            return None
+        
+        # Try to find a fallback image
+        # First, try role-based fallback
+        if character and character.role:
+            role_fallback = fallback_dir / f"{character.role.lower()}_fallback.png"
+            if role_fallback.exists():
+                return role_fallback
+        
+        # Try generic fallback
+        generic_fallback = fallback_dir / "character_fallback.png"
+        if generic_fallback.exists():
+            return generic_fallback
+        
+        # Try any PNG in the directory
+        fallback_images = list(fallback_dir.glob("*.png"))
+        if fallback_images:
+            return fallback_images[0]
+        
+        return None
+
     def _create_placeholder_character_image(
         self, output_path: Path, character: Optional[Character] = None, prompt: str = ""
     ) -> None:
@@ -609,7 +730,9 @@ class CharacterVideoEngine:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Create a simple colored background with character name
-        target_size = (1080, 1920)
+        video_width = getattr(self.settings, "video_width", 1080)
+        video_height = getattr(self.settings, "video_height", 1920)
+        target_size = (video_width, video_height)
         image = Image.new("RGB", target_size, color=(40, 40, 60))  # Dark blue-gray
 
         try:

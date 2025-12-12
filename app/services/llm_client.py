@@ -44,6 +44,7 @@ class LLMClient:
         characters: list[dict],
         max_lines: int = 2,
         style: str = "courtroom_drama",
+        scene_emotion: Optional[str] = None,
     ) -> list[dict]:
         """
         Generate dialogue lines for a scene using LLM.
@@ -63,10 +64,21 @@ class LLMClient:
         """
         self.logger.debug(f"Generating dialogue for scene role: {scene_role}, style: {style}")
 
-        # Build character context
+        # Build character context with enhanced depth
         character_context = []
         for char in characters:
             char_desc = f"{char['role']} ({char.get('name', 'unnamed')}): {char.get('personality', 'neutral')}"
+            # Add enhanced depth fields
+            if char.get('motivation'):
+                char_desc += f"\n  Motivation: {char['motivation']}"
+            if char.get('fear_insecurity'):
+                char_desc += f"\n  Fear/Insecurity: {char['fear_insecurity']}"
+            if char.get('belief_worldview'):
+                char_desc += f"\n  Belief/Worldview: {char['belief_worldview']}"
+            if char.get('preferred_speech_style'):
+                char_desc += f"\n  Speech Style: {char['preferred_speech_style']}"
+            if char.get('emotional_trigger'):
+                char_desc += f"\n  Emotional Trigger: {char['emotional_trigger']}"
             character_context.append(char_desc)
 
         # Build emotional, ragebait-focused prompt
@@ -102,9 +114,20 @@ class LLMClient:
         }
 
         emotion_goal = emotion_map.get(scene_role, "dramatic")
+        
+        # Use scene emotion marker if provided, otherwise use scene role emotion
+        target_emotion = scene_emotion or emotion_goal
 
-        # Build prompt
-        prompt = f"""Generate {max_lines} short, punchy dialogue lines for a viral {style} YouTube Short.
+        # Build prompt with enhanced natural dialogue requirements
+        prompt = f"""Generate {max_lines} short, punchy, NATURAL dialogue lines for a viral {style} YouTube Short.
+
+CRITICAL: Make dialogue feel REAL and HUMAN, not scripted or generic.
+
+Scene context:
+{scene_description}
+
+Narrative role: {scene_role} ({emotion_goal})
+Target emotion: {target_emotion}
 
 Scene context:
 {scene_description}
@@ -117,13 +140,63 @@ Characters present:
 Style instructions:
 {style_instructions}
 
-Requirements:
-- Each line should be 1-2 sentences max, speech-friendly (speakable in 3-5 seconds)
-- Match character personality and role EXACTLY
-- Focus on EMOTION and CONFLICT - make it feel real and dramatic
-- Lines should be believable but heightened for drama
-- CRITICAL: Do NOT restate the narrator's sentences. Instead, write what the characters would actually say or shout in that moment.
-- Characters should react emotionally to the described events, not repeat them.
+Requirements for NATURAL, REALISTIC dialogue:
+
+1. NATURAL EMOTIONAL SPEECH:
+   - Use sentence starters that feel real:
+     * "Wait—what?"
+     * "You can't be serious."
+     * "That's not what happened."
+     * "Are you lying to me right now?"
+   - Each line should be 1-2 sentences max, speech-friendly (speakable in 3-5 seconds)
+   - Match character personality, motivation, fears, and speech style EXACTLY
+
+2. INTERRUPTIONS AND CUT-OFFS:
+   - Use ellipsis (...) for trailing thoughts or pauses
+   - Use double dashes (--) for cut-offs or interruptions
+   - Examples:
+     * "Wait—what did you just say?"
+     * "I can't believe you—"
+     * "That's not... that's not possible."
+     * "You're telling me that after everything—"
+
+3. NO PASSIVE NARRATION:
+   - NEVER write: "He explained that she was not being honest."
+   - INSTEAD write: "Are you lying to me right now?"
+   - Characters speak directly, not through narration
+   - Show emotion through speech, not description
+
+4. EMOTION-BASED SPEECH PATTERNS:
+   - "anger" → clipped speech, direct confrontation, short sentences
+     * "You did this. You."
+     * "I'm done. We're done."
+   - "shock" → one-word reactions, disbelief, questions
+     * "What?"
+     * "No way."
+     * "You're serious?"
+   - "sad" → pauses, softer language, trailing off
+     * "I just... I can't believe it."
+     * "After everything we—"
+   - "tense" → rapid questions, contradictions, defensive
+     * "That's not what I said. That's not—"
+     * "Why would I do that? Why?"
+
+5. VARIETY REQUIREMENTS (at least 1 per scene):
+   - Rhetorical question: "You think this is fair?"
+   - Small talk denial: "I never said that."
+   - Contradiction line: "That's not what happened. That's not—"
+   - Escalating statement: "You're really going to do this? After everything?"
+
+6. SPECIFIC STAKES (not generic):
+   - BAD: "This isn't fair. You can't do this."
+   - GOOD: "You're firing me three days before rent is due? After everything I covered for the team?"
+   - Use SPECIFIC details that reveal stakes and context
+
+7. EMOTIONALLY MEANINGFUL:
+   - Reveal character depth and stakes
+   - Use character's emotional triggers and fears
+   - Show worldview and beliefs through words
+   - Focus on EMOTION and CONFLICT - make it feel real and dramatic
 
 Dialogue prioritization:
 - For HOOK scenes: Generate ONE extremely strong line (e.g., from judge/defendant/victim) that grabs attention immediately

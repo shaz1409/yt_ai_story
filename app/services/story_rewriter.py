@@ -122,6 +122,18 @@ class StoryRewriter:
         # Create narrative arc structure
         arc_structure = self._create_narrative_arc(raw_text, num_scenes, style_preset)
 
+        # Define alternating narration tones: reflective → direct → dramatic → soft
+        narration_tones = ["reflective", "direct", "dramatic", "soft"]
+        
+        # Define emotional markers per beat type
+        emotion_map = {
+            "hook": "shocked",
+            "setup": "tense",
+            "conflict": "angered",
+            "twist": "shocked",
+            "resolution": "relieved",
+        }
+
         # Build scenes from arc
         scenes = []
         arc_roles = ["hook", "setup", "conflict", "twist", "resolution"]
@@ -144,11 +156,17 @@ class StoryRewriter:
             # Enhance scene description with visual framing
             scene_description = self._enhance_scene_description(arc_text, scene_role, style)
 
+            # Assign alternating narration tone
+            narration_tone = narration_tones[(scene_id - 1) % len(narration_tones)]
+            
+            # Assign emotional marker
+            scene_emotion = emotion_map.get(scene_role, "tense")
+
             # Expand narration using LLM to reach target word count (120-150 words for 60s)
             # Target: ~30-40 words per scene for 4 scenes = 120-160 words total
             target_words_per_scene = max(25, (duration_seconds * 2.2) // num_scenes)  # ~2.2 words/sec
             expanded_narration = self._expand_narration_with_llm(
-                arc_text, scene_role, title, style, target_words_per_scene, style_preset
+                arc_text, scene_role, title, style, target_words_per_scene, style_preset, narration_tone
             )
 
             # Optimize narration for speech
@@ -175,6 +193,8 @@ class StoryRewriter:
                 description=scene_description,
                 narration_lines=narration_lines,
                 character_actions=character_actions,
+                emotion=scene_emotion,  # Add emotional marker
+                narration_tone=narration_tone,  # Add narration tone
             )
             scenes.append(scene)
 
@@ -412,7 +432,7 @@ class StoryRewriter:
             return f"A dramatic courtroom story about {title.lower()} with an unexpected twist."
 
     def _expand_narration_with_llm(
-        self, arc_text: str, scene_role: str, title: str, style: str, target_words: int, style_preset: dict
+        self, arc_text: str, scene_role: str, title: str, style: str, target_words: int, style_preset: dict, narration_tone: str = "direct"
     ) -> str:
         """
         Expand narration text using LLM to reach target word count with emotional, ragebait content.
@@ -472,15 +492,27 @@ class StoryRewriter:
 - Emphasize relationships and consequences
 """
 
+            # Map narration tone to instructions
+            tone_instructions = {
+                "reflective": "Use a thoughtful, introspective tone. Pause to consider implications. Use phrases like 'what this meant', 'the weight of', 'in that moment'.",
+                "direct": "Use a clear, straightforward tone. Be direct and immediate. State facts clearly without embellishment.",
+                "dramatic": "Use an intense, heightened tone. Emphasize emotion and stakes. Use strong verbs and vivid imagery.",
+                "soft": "Use a gentler, more measured tone. Softer language, less intensity. Still engaging but more contemplative.",
+            }
+            tone_instruction = tone_instructions.get(narration_tone, tone_instructions["direct"])
+
             prompt = f"""Write {target_words} words of dramatic narration for a {style} YouTube Short.
 
 Story: {title}
 Scene role: {scene_role} ({emotion_goal})
+Narration tone: {narration_tone}
+Tone instructions: {tone_instruction}
 Original context: {arc_text[:200]}
 
 Requirements:
 {style_instructions}
 - Write exactly {target_words} words (no more, no less)
+- Use the {narration_tone} tone as specified above
 - Make it tight, high-stakes, and emotionally charged
 - Use short, punchy sentences (8-14 words each)
 - Focus on what's happening NOW, not backstory
@@ -618,55 +650,74 @@ Input variables:
 - secondary_emotion: {secondary_emotion or "none"}
 - topic_hint: {topic_hint}
 
-Beat types:
+Beat types (use these exact types):
 - HOOK: Opening that grabs attention immediately (MUST grab attention within 1-2 seconds)
-- TRIGGER: Event that sets the story in motion
-- CONTEXT: Background information and setup
-- CLASH: Main conflict or confrontation
-- TWIST: Unexpected reveal or reversal
-- CTA: Call-to-action or conclusion (MUST end with a direct question to viewers)
+- SETUP: Background information and context (minimal backstory, focus on what matters)
+- CONFRONTATION: Main conflict or confrontation begins
+- ESCALATION: Tension rises, stakes increase
+- TURNING_POINT: Unexpected reveal or reversal that changes everything
+- CONSEQUENCE: The fallout from the turning point
+- OUTCOME: What happens as a result
+- FINAL_STING: One powerful closing sentence that leaves impact
 
-Patterns:
-- Pattern A: HOOK → TRIGGER → CONTEXT → CLASH → TWIST → CTA
-- Pattern B: HOOK → CONTEXT → CLASH → TRIGGER → CTA
-- Pattern C: HOOK → CONTEXT → TWIST → CLASH → CTA
+Patterns (choose ONE):
+- Pattern A: HOOK → SETUP → CONFRONTATION → ESCALATION → TURNING_POINT → CONSEQUENCE → OUTCOME → FINAL_STING
+- Pattern B: HOOK → SETUP → CONFRONTATION → TURNING_POINT → ESCALATION → CONSEQUENCE → OUTCOME → FINAL_STING
+- Pattern C: HOOK → SETUP → TURNING_POINT → CONFRONTATION → ESCALATION → CONSEQUENCE → OUTCOME → FINAL_STING
 
 CRITICAL REQUIREMENTS:
 
 1. HOOK (10-15% of word budget):
-   - MUST start with either:
-     (a) A shocking line of dialogue (e.g., "The judge laughed as he read the sentence.")
-     OR
-     (b) A visceral image (e.g., "A teenager smirks as the victim's family sobs in court.")
+   - MUST start with one of these viral-strength templates:
+     * "I wasn't supposed to see this, but..."
+     * "This started normally—then everything changed."
+     * "He thought no one would ever find out."
+     * "Everyone warned her, and she ignored them."
+   - OR use a shocking line of dialogue (e.g., "The judge laughed as he read the sentence.")
+   - OR use a visceral image (e.g., "A teenager smirks as the victim's family sobs in court.")
    - Must grab attention within 1-2 seconds
    - Must be emotionally triggering (shock, outrage, injustice)
-   - Keep it concise but powerful
+   - Keep it concise but powerful (1-2 sentences max)
 
-2. TRIGGER/CONTEXT (25-35% of word budget):
+2. SETUP (15-20% of word budget):
    - Set up the story efficiently
    - Avoid long backstory dumps
-   - Keep beats concise
+   - Keep it concise (2-3 sentences max)
    - Focus on what matters for emotional impact
 
-3. CLASH/TWIST (30-40% of word budget):
+3. CONFRONTATION/ESCALATION (25-35% of word budget):
    - This is where the emotional peak happens
    - Make it intense, dramatic, rage-inducing
    - Focus on injustice, shock, or moral conflict
    - This is NOT neutral news - make viewers feel something
+   - Keep each beat to 2-3 sentences max
 
-4. CTA (10-15% of word budget):
-   - MUST end with a single, direct question aimed at the viewer
-   - Explicitly ask for their opinion in the comments
+4. TURNING_POINT (15-20% of word budget):
+   - The moment everything changes
+   - Must be unexpected but believable
+   - Creates maximum emotional impact
+   - 2-3 sentences max
+
+5. CONSEQUENCE/OUTCOME (15-20% of word budget):
+   - Show the fallout and results
+   - Keep it tight and impactful
+   - 2-3 sentences max per beat
+
+6. FINAL_STING (5-10% of word budget):
+   - MUST be exactly ONE powerful sentence
    - Examples:
-     * "Should the judge have gone easier on them?"
-     * "Was this justice, or did the system fail?"
-     * "If this happened in your city, what would YOU want the sentence to be?"
-   - Make it personal and engaging
+     * "And that's how everything changed."
+     * "She still won't admit it was her fault."
+     * "He regrets every second of it."
+     * "The truth came out, and no one saw it coming."
+   - Leave viewers with a strong emotional impact
+   - This replaces the old CTA - make it memorable, not a question
 
 WORD BUDGET:
 - Total narration text across all beats should be around {target_word_count} words
 - Keep beats concise; avoid long backstory dumps
-- Distribute words roughly: HOOK (10-15%), TRIGGER/CONTEXT (25-35%), CLASH/TWIST (30-40%), CTA (10-15%)
+- MAX 2-3 sentences per beat section
+- Distribute words roughly: HOOK (10-15%), SETUP (15-20%), CONFRONTATION/ESCALATION (25-35%), TURNING_POINT (15-20%), CONSEQUENCE/OUTCOME (15-20%), FINAL_STING (5-10%)
 
 EMOTIONAL FRAMING:
 - Lean into outrage, injustice, and shock. This is not neutral news – make viewers feel something immediately.
@@ -679,8 +730,9 @@ TECHNICAL:
 - Choose ONE pattern (A, B, or C) that best fits the story
 - Generate beats in the chosen pattern order
 - Each beat must have: type, speaker ("narrator" or a character_id), target_emotion (rage/injustice/shock/disgust), and text
-- Text should be 1-3 sentences, speech-friendly (8-14 words per sentence)
-- Always end with a CTA beat
+- Text should be MAX 2-3 sentences per beat, speech-friendly (8-14 words per sentence)
+- Always end with a FINAL_STING beat (one powerful sentence)
+- Narrative propulsion > descriptive filler - keep it moving
 
 Output JSON ONLY (no markdown, no code blocks):
 {{
@@ -692,6 +744,12 @@ Output JSON ONLY (no markdown, no code blocks):
       "target_emotion": "shock",
       "text": "..."
     }},
+    {{
+      "type": "FINAL_STING",
+      "speaker": "narrator",
+      "target_emotion": "shock",
+      "text": "And that's how everything changed."
+    }}
     ...
   ]
 }}"""
@@ -835,10 +893,11 @@ Output JSON ONLY (no markdown, no code blocks):
         if not beats:
             raise ValueError("No valid beats to build script from")
 
-        # Ensure CTA is at the end
-        cta_beats = [b for b in beats if b.type == "CTA"]
-        non_cta_beats = [b for b in beats if b.type != "CTA"]
-        beats = non_cta_beats + cta_beats
+        # Ensure FINAL_STING is at the end (or CTA for backward compatibility)
+        final_sting_beats = [b for b in beats if b.type == "FINAL_STING"]
+        cta_beats = [b for b in beats if b.type == "CTA"]  # Backward compatibility
+        non_final_beats = [b for b in beats if b.type not in ["FINAL_STING", "CTA"]]
+        beats = non_final_beats + (final_sting_beats if final_sting_beats else cta_beats)
 
         # Group beats into scenes
         # Strategy: Group consecutive beats by type or create new scene for major transitions
@@ -849,7 +908,7 @@ Output JSON ONLY (no markdown, no code blocks):
         for i, beat in enumerate(beats):
             # Start new scene for major beat types or when we have enough beats
             should_start_new_scene = (
-                beat.type in ["HOOK", "CLASH", "TWIST", "CTA"]
+                beat.type in ["HOOK", "CONFRONTATION", "ESCALATION", "TURNING_POINT", "FINAL_STING", "CTA"]  # CTA for backward compat
                 or len(current_scene_beats) >= 2
             )
 

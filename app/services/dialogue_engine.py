@@ -111,7 +111,7 @@ class DialogueEngine:
         # Try LLM generation if enabled
         if self.use_llm and self.llm_client:
             try:
-                # Prepare character info for LLM
+                # Prepare character info for LLM with enhanced depth
                 characters = []
                 for role, char in character_map.items():
                     if role != "narrator":  # Skip narrator
@@ -122,8 +122,17 @@ class DialogueEngine:
                                 "personality": char.personality,
                                 "voice_profile": char.voice_profile,
                                 "character_id": char.id,
+                                # Enhanced character depth
+                                "motivation": getattr(char, "motivation", None),
+                                "fear_insecurity": getattr(char, "fear_insecurity", None),
+                                "belief_worldview": getattr(char, "belief_worldview", None),
+                                "preferred_speech_style": getattr(char, "preferred_speech_style", None),
+                                "emotional_trigger": getattr(char, "emotional_trigger", None),
                             }
                         )
+
+                # Get scene emotion marker if available
+                scene_emotion = getattr(scene, "emotion", None)
 
                 # Generate dialogue via LLM
                 llm_dialogue = self.llm_client.generate_dialogue(
@@ -132,6 +141,7 @@ class DialogueEngine:
                     characters=characters,
                     max_lines=max_lines_for_scene,
                     style=getattr(self.settings, "default_style", "courtroom_drama"),
+                    scene_emotion=scene_emotion,  # Pass emotional marker
                 )
 
                 # Convert LLM output to DialogueLine objects

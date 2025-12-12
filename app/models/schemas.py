@@ -1,9 +1,23 @@
 """Pydantic models and schemas for the story generation pipeline."""
 
 from datetime import datetime
+from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
+
+# ============================================================================
+# Enums
+# ============================================================================
+
+
+class EditPattern(str, Enum):
+    """Edit pattern/visual style for video composition."""
+
+    TALKING_HEAD_HEAVY = "talking_head_heavy"
+    BROLL_CINEMATIC = "broll_cinematic"
+    MIXED_RAPID = "mixed_rapid"
 
 
 # ============================================================================
@@ -117,6 +131,12 @@ class Character(BaseModel):
     detailed_voice_profile: Optional[CharacterVoiceProfile] = Field(
         default=None, description="Detailed voice profile with gender, age, tone (for character speech)"
     )
+    # Enhanced character depth fields
+    motivation: Optional[str] = Field(default=None, description="Character's core motivation or goal")
+    fear_insecurity: Optional[str] = Field(default=None, description="Character's fear or insecurity")
+    belief_worldview: Optional[str] = Field(default=None, description="Character's belief or worldview")
+    preferred_speech_style: Optional[str] = Field(default=None, description="Preferred speech style (formal, casual, defensive, etc.)")
+    emotional_trigger: Optional[str] = Field(default=None, description="What triggers strong emotional reactions in this character")
 
 
 class CharacterSet(BaseModel):
@@ -202,7 +222,10 @@ class EpisodeMetadata(BaseModel):
     comments_24h: Optional[int] = Field(default=None, description="Comments in first 24 hours")
     avg_view_duration_24h: Optional[float] = Field(default=None, description="Average view duration in first 24 hours (seconds)")
     avg_view_percent_24h: Optional[float] = Field(default=None, description="Average view percentage in first 24 hours (0-100)")
-    edit_pattern: Optional[str] = Field(default=None, description="Edit pattern/visual style for this episode (talking_head_heavy, broll_cinematic, mixed_rapid)")
+    edit_pattern: Optional[EditPattern] = Field(
+        default=None,
+        description="Edit pattern/visual style for this episode (talking_head_heavy, broll_cinematic, mixed_rapid)",
+    )
 
 
 # ============================================================================
@@ -243,6 +266,7 @@ class VideoScene(BaseModel):
     character_spoken_lines: list[CharacterSpokenLine] = Field(
         default_factory=list, description="Lines that should be spoken by characters (not narrator)"
     )
+    emotion: Optional[str] = Field(default=None, description="Emotional marker for this scene/beat (tense, angered, sad, shocked, relieved, vindicated)")
 
 
 class VideoPlan(BaseModel):
@@ -264,6 +288,11 @@ class VideoPlan(BaseModel):
     )
     b_roll_scenes: list[BrollScene] = Field(
         default_factory=list, description="Cinematic B-roll scenes for the entire video (4-6 scenes)"
+    )
+    
+    # Optional reveal points (timestamps when revelations occur)
+    reveal_points: Optional[list[int]] = Field(
+        default=None, description="List of timestamps (in seconds) when revelations or contradictions occur in the story"
     )
 
     # Generation metadata

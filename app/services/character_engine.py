@@ -134,6 +134,13 @@ class CharacterEngine:
         # Generate detailed voice profile for character speech
         detailed_voice_profile = self._generate_detailed_voice_profile(role, template, appearance)
 
+        # Generate enhanced character depth fields
+        motivation = self._generate_motivation(role, template)
+        fear_insecurity = self._generate_fear_insecurity(role, template)
+        belief_worldview = self._generate_belief_worldview(role, template)
+        preferred_speech_style = self._generate_speech_style(role, template)
+        emotional_trigger = self._generate_emotional_trigger(role, template)
+
         character = Character(
             id=f"{role}_{uuid.uuid4().hex[:8]}",
             role=role,
@@ -142,6 +149,11 @@ class CharacterEngine:
             personality=personality,
             voice_profile=voice_profile,
             detailed_voice_profile=detailed_voice_profile,
+            motivation=motivation,
+            fear_insecurity=fear_insecurity,
+            belief_worldview=belief_worldview,
+            preferred_speech_style=preferred_speech_style,
+            emotional_trigger=emotional_trigger,
         )
 
         return character
@@ -212,4 +224,67 @@ class CharacterEngine:
             first_name = first_names[index % len(first_names)]
             last_name = last_names[index % len(last_names)]
             return f"{first_name} {last_name}"
+
+    def _generate_motivation(self, role: str, template: dict) -> str:
+        """Generate character motivation based on role."""
+        motivations = {
+            "judge": "Uphold justice and maintain order in the courtroom",
+            "defendant": "Prove innocence and avoid conviction",
+            "lawyer": "Win the case and protect the client's rights",
+            "prosecutor": "Secure conviction and serve justice",
+            "witness": "Tell the truth and help the court understand what happened",
+            "narrator": "Tell the story clearly and engagingly",
+        }
+        return motivations.get(role, "Fulfill their role in the story")
+
+    def _generate_fear_insecurity(self, role: str, template: dict) -> str:
+        """Generate character fear or insecurity based on role."""
+        fears = {
+            "judge": "Making a wrong decision that ruins someone's life",
+            "defendant": "Losing everything and going to prison",
+            "lawyer": "Failing the client and losing the case",
+            "prosecutor": "A guilty person going free",
+            "witness": "Not being believed or facing retaliation",
+            "narrator": "Not telling the story effectively",
+        }
+        return fears.get(role, "Failure or making mistakes")
+
+    def _generate_belief_worldview(self, role: str, template: dict) -> str:
+        """Generate character belief or worldview based on role."""
+        beliefs = {
+            "judge": "The law must be applied fairly and consistently",
+            "defendant": "Everyone deserves a fair chance and second chances",
+            "lawyer": "Everyone has the right to a strong defense",
+            "prosecutor": "Crime must be punished to protect society",
+            "witness": "The truth matters and must be told",
+            "narrator": "Stories help people understand complex situations",
+        }
+        return beliefs.get(role, "Doing what is right")
+
+    def _generate_speech_style(self, role: str, template: dict) -> str:
+        """Generate preferred speech style based on role and personality."""
+        personality_traits = template.get("personality_traits", [])
+        
+        if "authoritative" in personality_traits or "stern" in personality_traits:
+            return "formal, measured, authoritative"
+        elif "nervous" in personality_traits or "anxious" in personality_traits:
+            return "hesitant, defensive, sometimes rushed"
+        elif "confident" in personality_traits or "persuasive" in personality_traits:
+            return "confident, articulate, strategic"
+        elif "emotional" in personality_traits:
+            return "emotional, passionate, sometimes informal"
+        else:
+            return "clear, direct, professional"
+
+    def _generate_emotional_trigger(self, role: str, template: dict) -> str:
+        """Generate what triggers strong emotional reactions in this character."""
+        triggers = {
+            "judge": "Disrespect for the court or attempts to manipulate the system",
+            "defendant": "Unfair treatment or being misunderstood",
+            "lawyer": "Injustice or procedural violations",
+            "prosecutor": "Defendants showing no remorse or trying to evade responsibility",
+            "witness": "Being doubted or pressured to change testimony",
+            "narrator": "None (remains neutral)",
+        }
+        return triggers.get(role, "Injustice or unfairness")
 

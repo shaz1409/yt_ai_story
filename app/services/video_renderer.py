@@ -13,7 +13,9 @@ if not hasattr(Image, "ANTIALIAS"):
 from app.core.config import Settings
 from app.core.logging_config import get_logger
 from app.utils.error_handler import format_error_message, get_fallback_suggestion
-from app.models.schemas import Character, DialogueLine, VideoPlan
+from app.utils.parallel_executor import ParallelExecutor
+from app.models.schemas import Character, DialogueLine, EditPattern, VideoPlan
+from typing import Optional
 from app.services.character_video_engine import CharacterVideoEngine
 from app.services.hf_endpoint_client import HFEndpointClient
 from app.services.tts_client import TTSClient
@@ -43,8 +45,18 @@ class VideoRenderer:
             self.logger.warning(f"HF Endpoint not configured: {e}. Will use placeholder images.")
             self.hf_endpoint_client = None
         self.max_talking_head_lines = getattr(settings, "max_talking_head_lines_per_video", 3)
+        
+        # Initialize parallel executor for intra-episode API parallelism
+        self.parallel_executor = ParallelExecutor(settings, logger)
+        
+        # Initialize image quality validator for score collection
+        from app.services.image_quality_validator import ImageQualityValidator
+        self.image_validator = ImageQualityValidator(settings, logger)
+        
+        # Track image quality scores during rendering
+        self.image_scores: list[float] = []
 
-    def render(self, video_plan: VideoPlan, output_dir: Path) -> Path:
+    def render(self, video_plan: VideoPlan, output_dir: Path) -> tuple[Path, list[float]]:
         """
         Main entrypoint: render VideoPlan into final .mp4 video.
 
@@ -53,7 +65,7 @@ class VideoRenderer:
             output_dir: Directory to save output files
 
         Returns:
-            Path to final .mp4 video file
+            Tuple of (Path to final .mp4 video file, list of image quality scores)
         """
         self.logger.info("=" * 60)
         self.logger.info("Starting video rendering")
@@ -65,7 +77,19 @@ class VideoRenderer:
         edit_pattern = None
         if video_plan.metadata and video_plan.metadata.edit_pattern:
             edit_pattern = video_plan.metadata.edit_pattern
-            self.logger.info(f"Edit pattern for this episode: {edit_pattern}")
+            # Handle both enum and string (for backward compatibility)
+            if isinstance(edit_pattern, EditPattern):
+                edit_pattern_value = edit_pattern.value
+            else:
+                # Try to convert string to enum, fallback to default if invalid
+                try:
+                    edit_pattern = EditPattern(edit_pattern)
+                    edit_pattern_value = edit_pattern.value
+                except (ValueError, TypeError):
+                    self.logger.warning(f"Invalid edit pattern '{edit_pattern}', defaulting to TALKING_HEAD_HEAVY")
+                    edit_pattern = EditPattern.TALKING_HEAD_HEAVY
+                    edit_pattern_value = edit_pattern.value
+            self.logger.info(f"Edit pattern for this episode: {edit_pattern_value}")
         else:
             self.logger.info("No edit pattern set, using default rendering behaviour.")
         
@@ -96,6 +120,16 @@ class VideoRenderer:
                 video_plan, output_dir, video_plan.style, image_style=image_style
             )
             self.logger.info(f"Generated {len(character_assets)} {image_style} character face images")
+            
+            # Collect image quality scores for character images
+            for char_id, char_path in character_assets.items():
+                if char_path.exists():
+                    try:
+                        score = self.image_validator.score_image(char_path, "character_portrait")
+                        self.image_scores.append(score)
+                        self.logger.debug(f"Character image quality score: {score:.3f} for {char_id}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to score character image {char_path}: {e}")
 
             # Step 3b: Generate talking-head video clips for character spoken lines
             if character_voice_clips:
@@ -115,16 +149,39 @@ class VideoRenderer:
         scene_visuals = self._generate_scene_visuals(video_plan, output_dir)
         broll_visuals = self._generate_cinematic_broll(video_plan, output_dir)
         self.logger.info(f"Generated {len(scene_visuals)} scene visuals and {len(broll_visuals)} cinematic B-roll scenes")
+        
+        # Collect image quality scores for scene visuals and B-roll
+        for scene_path in scene_visuals:
+            if scene_path.exists():
+                try:
+                    score = self.image_validator.score_image(scene_path, "scene_broll")
+                    self.image_scores.append(score)
+                    self.logger.debug(f"Scene visual quality score: {score:.3f} for {scene_path.name}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to score scene visual {scene_path}: {e}")
+        
+        for broll_path in broll_visuals:
+            if broll_path.exists():
+                try:
+                    score = self.image_validator.score_image(broll_path, "scene_broll")
+                    self.image_scores.append(score)
+                    self.logger.debug(f"B-roll quality score: {score:.3f} for {broll_path.name}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to score B-roll {broll_path}: {e}")
 
-        # Step 5: Compose final video (with character clips and B-roll inserted)
-        self.logger.info("Step 5: Composing final video...")
+        # Step 5: Validate assets before rendering
+        self.logger.info("Step 5: Validating assets before rendering...")
+        self._validate_assets(video_plan, video_plan.episode_id, audio_path, character_voice_clips, talking_head_clips, scene_visuals, broll_visuals, output_dir)
+
+        # Step 6: Compose final video (with character clips and B-roll inserted)
+        self.logger.info("Step 6: Composing final video...")
         video_path = output_dir / f"{video_plan.episode_id}_video.mp4"
         video_duration, audio_duration = self._compose_video(
             video_plan, audio_path, scene_visuals, video_path, talking_head_clips, character_voice_clips, broll_visuals
         )
 
-        # Step 6: Update metadata with rendering information
-        self.logger.info("Step 6: Updating episode metadata...")
+        # Step 7: Update metadata with rendering information
+        self.logger.info("Step 7: Updating episode metadata...")
         if video_plan.metadata:
             video_plan.metadata.video_duration_sec = video_duration
             video_plan.metadata.audio_duration_sec = audio_duration
@@ -139,9 +196,111 @@ class VideoRenderer:
         self.logger.info("=" * 60)
         self.logger.info("Video rendering complete!")
         self.logger.info(f"Final video: {video_path}")
+        self.logger.info(f"Collected {len(self.image_scores)} image quality scores")
         self.logger.info("=" * 60)
 
-        return video_path
+        return video_path, self.image_scores
+
+    def _validate_assets(
+        self,
+        video_plan: VideoPlan,
+        episode_id: str,
+        narration_audio_path: Path,
+        character_voice_clips: dict[str, Path],
+        talking_head_clips: dict[str, Path],
+        scene_visuals: list[Path],
+        broll_visuals: list[Path],
+        output_dir: Path,
+    ) -> None:
+        """
+        Ensure all required assets exist before composing the video.
+        
+        If something is missing, either:
+        - attempt a safe fallback (placeholder), or
+        - log a clear error and raise a controlled exception.
+        
+        Args:
+            video_plan: VideoPlan with episode content
+            episode_id: Episode ID for logging
+            narration_audio_path: Path to narration audio file
+            character_voice_clips: Mapping of character voice clip paths
+            talking_head_clips: Mapping of talking-head clip paths
+            scene_visuals: List of scene visual image paths
+            broll_visuals: List of B-roll image paths
+            output_dir: Output directory for fallback assets
+            
+        Raises:
+            ValueError: If critical assets are missing with no fallback
+        """
+        errors = []
+        warnings = []
+        
+        # Validate narration audio (critical)
+        if not narration_audio_path.exists():
+            error_msg = f"Episode {episode_id}: Narration audio file not found: {narration_audio_path}"
+            self.logger.error(error_msg)
+            errors.append(error_msg)
+        else:
+            self.logger.debug(f"Episode {episode_id}: Narration audio validated: {narration_audio_path}")
+        
+        # Validate character voice clips (if character_spoken_lines exist)
+        if video_plan.character_spoken_lines:
+            for idx, spoken_line in enumerate(video_plan.character_spoken_lines):
+                clip_key = str(idx)
+                if clip_key in character_voice_clips:
+                    clip_path = character_voice_clips[clip_key]
+                    if not clip_path.exists():
+                        warning_msg = f"Episode {episode_id}: Character voice clip {idx} not found: {clip_path}"
+                        self.logger.warning(warning_msg)
+                        warnings.append(warning_msg)
+                else:
+                    warning_msg = f"Episode {episode_id}: Character voice clip {idx} not generated for character {spoken_line.character_id}"
+                    self.logger.warning(warning_msg)
+                    warnings.append(warning_msg)
+        
+        # Validate talking-head clips (if character_spoken_lines exist and talking heads enabled)
+        if self.use_talking_heads and video_plan.character_spoken_lines:
+            for idx, spoken_line in enumerate(video_plan.character_spoken_lines):
+                clip_key = str(idx)
+                if clip_key in talking_head_clips:
+                    clip_path = talking_head_clips[clip_key]
+                    if not clip_path.exists():
+                        warning_msg = f"Episode {episode_id}: Talking-head clip {idx} not found: {clip_path}, will use fallback"
+                        self.logger.warning(warning_msg)
+                        warnings.append(warning_msg)
+        
+        # Validate scene visuals (critical - need at least one)
+        if not scene_visuals:
+            error_msg = f"Episode {episode_id}: No scene visuals generated"
+            self.logger.error(error_msg)
+            errors.append(error_msg)
+        else:
+            missing_scene_visuals = [p for p in scene_visuals if not p.exists()]
+            if missing_scene_visuals:
+                warning_msg = f"Episode {episode_id}: {len(missing_scene_visuals)} scene visuals missing, will use fallbacks"
+                self.logger.warning(warning_msg)
+                warnings.append(warning_msg)
+            else:
+                self.logger.debug(f"Episode {episode_id}: All {len(scene_visuals)} scene visuals validated")
+        
+        # Validate B-roll visuals (optional - nice to have)
+        if broll_visuals:
+            missing_broll = [p for p in broll_visuals if not p.exists()]
+            if missing_broll:
+                warning_msg = f"Episode {episode_id}: {len(missing_broll)} B-roll visuals missing, will use scene visuals as fallback"
+                self.logger.warning(warning_msg)
+                warnings.append(warning_msg)
+        
+        # If critical errors, raise exception
+        if errors:
+            error_summary = "; ".join(errors)
+            raise ValueError(f"Episode {episode_id}: Critical asset validation failed: {error_summary}")
+        
+        # Log warnings summary
+        if warnings:
+            self.logger.warning(f"Episode {episode_id}: Asset validation completed with {len(warnings)} warnings (non-critical)")
+        else:
+            self.logger.info(f"Episode {episode_id}: All assets validated successfully")
 
     def _extract_narration_text(self, video_plan: VideoPlan) -> str:
         """Extract all narration text from VideoPlan (excluding character spoken lines)."""
@@ -160,7 +319,7 @@ class VideoRenderer:
         self, video_plan: VideoPlan, output_dir: Path
     ) -> dict[str, Path]:
         """
-        Generate character voice audio clips for character spoken lines.
+        Generate character voice audio clips for character spoken lines (parallelized).
 
         Args:
             video_plan: VideoPlan with character_spoken_lines
@@ -175,30 +334,61 @@ class VideoRenderer:
         character_voice_clips = {}
         character_map = {char.id: char for char in video_plan.characters}
 
+        # Prepare parallel tasks for TTS generation
+        tts_tasks = []
+        tts_task_names = []
+        tts_results_map = {}  # Map index to result
+
         for idx, spoken_line in enumerate(video_plan.character_spoken_lines):
             character = character_map.get(spoken_line.character_id)
             if not character:
                 self.logger.warning(f"Character {spoken_line.character_id} not found, skipping spoken line")
                 continue
 
-            if not character.detailed_voice_profile:
-                self.logger.warning(f"Character {character.name} has no detailed_voice_profile, using default")
-                # Fallback to simple voice_profile
-                self.tts_client.generate_speech(
-                    text=spoken_line.line_text,
-                    output_path=character_audio_dir / f"character_voice_{idx}.mp3",
-                    voice_profile=character.voice_profile,
-                )
-            else:
-                # Use detailed voice profile
-                self.tts_client.generate_character_voice(
-                    character_voice_profile=character.detailed_voice_profile,
-                    text=spoken_line.line_text,
-                    output_path=character_audio_dir / f"character_voice_{idx}.mp3",
-                )
+            audio_path = character_audio_dir / f"character_voice_{idx}.mp3"
+            
+            # Create task closure
+            def create_tts_task(line_idx: int, char: Character, line: Any, path: Path):
+                def generate_tts():
+                    if not char.detailed_voice_profile:
+                        self.logger.warning(f"Character {char.name} has no detailed_voice_profile, using default")
+                        self.tts_client.generate_speech(
+                            text=line.line_text,
+                            output_path=path,
+                            voice_profile=char.voice_profile,
+                        )
+                    else:
+                        self.tts_client.generate_character_voice(
+                            character_voice_profile=char.detailed_voice_profile,
+                            text=line.line_text,
+                            output_path=path,
+                        )
+                    return path
+                return generate_tts
 
-            character_voice_clips[str(idx)] = character_audio_dir / f"character_voice_{idx}.mp3"
-            self.logger.info(f"Generated character voice audio for {character.name}: '{spoken_line.line_text[:50]}...'")
+            tts_tasks.append(create_tts_task(idx, character, spoken_line, audio_path))
+            tts_task_names.append(f"character_voice_{idx}_{character.name}")
+            tts_results_map[idx] = audio_path
+
+        # Execute TTS tasks in parallel
+        if tts_tasks:
+            self.logger.info(f"Generating {len(tts_tasks)} character voice clips in parallel...")
+            tts_results = self.parallel_executor.execute_api_calls(
+                tts_tasks,
+                task_names=tts_task_names,
+                episode_id=video_plan.episode_id,
+            )
+            
+            # Map results
+            for i, (result, exception) in enumerate(tts_results):
+                if exception:
+                    self.logger.warning(f"Character voice clip {i} generation failed: {exception}")
+                elif result:
+                    idx = list(tts_results_map.keys())[i]
+                    character_voice_clips[str(idx)] = result
+                    spoken_line = video_plan.character_spoken_lines[idx]
+                    character = character_map.get(spoken_line.character_id)
+                    self.logger.info(f"Generated character voice audio for {character.name if character else 'unknown'}: '{spoken_line.line_text[:50]}...'")
 
         return character_voice_clips
 
@@ -408,38 +598,70 @@ class VideoRenderer:
 
         scene_visuals = []
 
+        # Prepare parallel tasks for scene image generation
+        scene_tasks = []
+        scene_task_names = []
+        scene_results_map = {}  # Map scene_id to result path
+
         for scene_idx, scene in enumerate(video_plan.scenes):
             is_hook_scene = scene_idx == 0  # First scene is typically HOOK
             
-            self.logger.info(f"Generating visual for scene {scene.scene_id}...")
-
             # Build emotion-aware image prompt
             prompt = self._build_emotion_aware_broll_prompt(scene, video_plan)
-
             image_path = images_dir / f"scene_{scene.scene_id:02d}.png"
 
-            try:
-                self._generate_image(prompt, image_path, image_type="scene_broll")
-                scene_visuals.append(image_path)
-                
-                # HOOK-first visual bias: Generate extra b-roll variant for HOOK scene
-                if is_hook_scene:
-                    self.logger.info(f"HOOK visual prompt: {prompt[:120]}...")
-                    # Generate an extra variant with more extreme/triggering prompt
-                    hook_variant_prompt = self._build_hook_variant_prompt(scene, video_plan)
-                    variant_path = images_dir / f"scene_{scene.scene_id:02d}_variant.png"
+            # Create task closure
+            def create_scene_task(scene_id: int, scene_obj: Any, img_prompt: str, img_path: Path, is_hook: bool):
+                def generate_scene_image():
                     try:
-                        self._generate_image(hook_variant_prompt, variant_path, image_type="scene_broll")
-                        self.logger.info(f"Generated HOOK variant visual: {variant_path}")
-                        # For now, we'll use the primary, but variant is available for future use
-                    except Exception as e:
-                        self.logger.warning(f"Failed to generate HOOK variant: {e}, using primary only")
+                        self._generate_image(img_prompt, img_path, image_type="scene_broll")
+                        self.logger.info(f"Generated visual for scene {scene_id}")
                         
-            except Exception as e:
-                self.logger.error(f"Failed to generate image for scene {scene.scene_id}: {e}")
-                # Create placeholder image
-                self._create_placeholder_image(image_path, scene)
-                scene_visuals.append(image_path)
+                        # HOOK-first visual bias: Generate extra b-roll variant for HOOK scene
+                        if is_hook:
+                            self.logger.info(f"HOOK visual prompt: {img_prompt[:120]}...")
+                            hook_variant_prompt = self._build_hook_variant_prompt(scene_obj, video_plan)
+                            variant_path = images_dir / f"scene_{scene_id:02d}_variant.png"
+                            try:
+                                self._generate_image(hook_variant_prompt, variant_path, image_type="scene_broll")
+                                self.logger.info(f"Generated HOOK variant visual: {variant_path}")
+                            except Exception as e:
+                                self.logger.warning(f"Failed to generate HOOK variant: {e}, using primary only")
+                        
+                        return img_path
+                    except Exception as e:
+                        self.logger.error(f"Failed to generate image for scene {scene_id}: {e}")
+                        self._create_placeholder_image(img_path, scene_obj)
+                        return img_path
+                return generate_scene_image
+
+            scene_tasks.append(create_scene_task(scene.scene_id, scene, prompt, image_path, is_hook_scene))
+            scene_task_names.append(f"scene_{scene.scene_id}")
+            scene_results_map[scene.scene_id] = image_path
+
+        # Execute scene image tasks in parallel
+        if scene_tasks:
+            self.logger.info(f"Generating {len(scene_tasks)} scene visuals in parallel...")
+            scene_results = self.parallel_executor.execute_api_calls(
+                scene_tasks,
+                task_names=scene_task_names,
+                episode_id=video_plan.episode_id,
+            )
+            
+            # Map results (sort by scene_id to maintain order)
+            for i, (result, exception) in enumerate(scene_results):
+                if exception:
+                    self.logger.warning(f"Scene visual {i} generation failed: {exception}")
+                    # Use placeholder
+                    scene_id = list(scene_results_map.keys())[i]
+                    scene_obj = video_plan.scenes[i]
+                    self._create_placeholder_image(scene_results_map[scene_id], scene_obj)
+                    scene_visuals.append(scene_results_map[scene_id])
+                elif result:
+                    scene_visuals.append(result)
+            
+            # Sort by scene_id to maintain order
+            scene_visuals.sort(key=lambda p: int(p.stem.split("_")[1]) if "_" in p.stem else 0)
 
         return scene_visuals
 
@@ -468,20 +690,20 @@ class VideoRenderer:
             image_path = broll_dir / f"broll_{broll_scene.category}_{idx:02d}.png"
 
             try:
-                # Generate B-roll scene using HF endpoint
+                # Generate B-roll scene using HF endpoint (with quality validation and retry logic)
                 if self.hf_endpoint_client:
-                    self.hf_endpoint_client.generate_broll_scene(
+                    result_path = self.hf_endpoint_client.generate_broll_scene(
                         prompt=broll_scene.prompt,
                         output_path=image_path,
                         realism_level="high",
                     )
-                    broll_visuals.append(image_path)
-                    self.logger.info(f"Generated B-roll scene ({broll_scene.category}): {image_path}")
+                    broll_visuals.append(result_path)
+                    self.logger.info(f"Generated B-roll scene ({broll_scene.category}): {result_path}")
                 else:
                     raise Exception("HF Endpoint not configured")
             except Exception as e:
                 self.logger.warning(f"Failed to generate B-roll scene {idx}: {e}, trying fallback...")
-                # Try fallback placeholder
+                # Try fallback placeholder (generate_broll_scene already tried fallbacks, but we can try again)
                 fallback_path = self._get_broll_fallback(broll_scene.category, fallback_dir, image_path)
                 if fallback_path:
                     broll_visuals.append(fallback_path)
@@ -538,8 +760,9 @@ class VideoRenderer:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         from PIL import ImageDraw, ImageFont, ImageFilter
 
-        # Create image (1080x1920 vertical)
-        width, height = 1080, 1920
+        # Create image (vertical format)
+        width = getattr(self.settings, "video_width", 1080)
+        height = getattr(self.settings, "video_height", 1920)
         image = Image.new("RGB", (width, height), color=(30, 35, 50))
         draw = ImageDraw.Draw(image)
 
@@ -762,8 +985,9 @@ class VideoRenderer:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         from PIL import ImageDraw, ImageFont, ImageFilter
 
-        # Create image (1080x1920 vertical)
-        width, height = 1080, 1920
+        # Create image (vertical format)
+        width = getattr(self.settings, "video_width", 1080)
+        height = getattr(self.settings, "video_height", 1920)
         
         # Create gradient background (dark blue-gray to darker)
         image = Image.new("RGB", (width, height), color=(20, 25, 40))
@@ -924,7 +1148,9 @@ class VideoRenderer:
             scene_idx = 0
             if scene_idx < len(scene_visuals) and scene_visuals[scene_idx].exists():
                 img_clip = ImageClip(str(scene_visuals[scene_idx])).set_duration(narration_segment_duration)
-                img_clip = img_clip.resize((1080, 1920))
+                video_width = getattr(self.settings, "video_width", 1080)
+                video_height = getattr(self.settings, "video_height", 1920)
+                img_clip = img_clip.resize((video_width, video_height))
                 # Apply Ken Burns effect (subtle zoom/pan)
                 img_clip = self._apply_ken_burns_effect(img_clip, narration_segment_duration)
                 img_clip = img_clip.fadein(transition_duration)
@@ -942,12 +1168,22 @@ class VideoRenderer:
                 if talking_head_clip_path and talking_head_clip_path.exists():
                     try:
                         th_clip = VideoFileClip(str(talking_head_clip_path))
-                        # Ensure duration matches audio
-                        if th_clip.duration > character_clip_duration:
-                            th_clip = th_clip.subclip(0, character_clip_duration)
-                        elif th_clip.duration < character_clip_duration:
-                            # Extend with last frame
-                            th_clip = th_clip.loop(duration=character_clip_duration)
+                        # Trust the clip's real duration (lip-sync providers align duration automatically)
+                        # Only adjust if there's a significant mismatch (>0.2s)
+                        duration_diff = abs(th_clip.duration - character_clip_duration)
+                        if duration_diff > 0.2:
+                            self.logger.debug(
+                                f"Talking-head duration mismatch: clip={th_clip.duration:.2f}s, "
+                                f"audio={character_clip_duration:.2f}s, adjusting..."
+                            )
+                            if th_clip.duration > character_clip_duration:
+                                th_clip = th_clip.subclip(0, character_clip_duration)
+                            else:
+                                # Extend with last frame
+                                th_clip = th_clip.loop(duration=character_clip_duration)
+                        else:
+                            # Use clip's actual duration (trust lip-sync provider alignment)
+                            character_clip_duration = th_clip.duration
                         
                         # Add crossfade transitions
                         if video_clips:
@@ -963,7 +1199,9 @@ class VideoRenderer:
                         scene_idx = min(spoken_line.scene_id - 1, len(scene_visuals) - 1)
                         if scene_idx >= 0 and scene_visuals[scene_idx].exists():
                             img_clip = ImageClip(str(scene_visuals[scene_idx])).set_duration(character_clip_duration)
-                            img_clip = img_clip.resize((1080, 1920))
+                            video_width = getattr(self.settings, "video_width", 1080)
+                            video_height = getattr(self.settings, "video_height", 1920)
+                            img_clip = img_clip.resize((video_width, video_height))
                             # Apply Ken Burns effect
                             img_clip = self._apply_ken_burns_effect(img_clip, character_clip_duration)
                             img_clip = img_clip.fadein(transition_duration)
@@ -974,7 +1212,9 @@ class VideoRenderer:
                     scene_idx = min(spoken_line.scene_id - 1, len(scene_visuals) - 1)
                     if scene_idx >= 0 and scene_visuals[scene_idx].exists():
                         img_clip = ImageClip(str(scene_visuals[scene_idx])).set_duration(character_clip_duration)
-                        img_clip = img_clip.resize((1080, 1920))
+                        video_width = getattr(self.settings, "video_width", 1080)
+                        video_height = getattr(self.settings, "video_height", 1920)
+                        img_clip = img_clip.resize((video_width, video_height))
                         # Apply Ken Burns effect
                         img_clip = self._apply_ken_burns_effect(img_clip, character_clip_duration)
                         img_clip = img_clip.fadein(transition_duration)
@@ -986,7 +1226,9 @@ class VideoRenderer:
                 scene_idx = min(spoken_line.scene_id, len(scene_visuals) - 1)
                 if scene_idx >= 0 and scene_visuals[scene_idx].exists():
                     img_clip = ImageClip(str(scene_visuals[scene_idx])).set_duration(narration_segment_duration)
-                    img_clip = img_clip.resize((1080, 1920))
+                    video_width = getattr(self.settings, "video_width", 1080)
+                    video_height = getattr(self.settings, "video_height", 1920)
+                    img_clip = img_clip.resize((video_width, video_height))
                     # Apply Ken Burns effect
                     img_clip = self._apply_ken_burns_effect(img_clip, narration_segment_duration)
                     img_clip = img_clip.fadein(0.3)  # Quick transition
@@ -999,7 +1241,9 @@ class VideoRenderer:
             scene_idx = len(scene_visuals) - 1
             if scene_idx >= 0 and scene_visuals[scene_idx].exists():
                 img_clip = ImageClip(str(scene_visuals[scene_idx])).set_duration(remaining_time)
-                img_clip = img_clip.resize((1080, 1920))
+                video_width = getattr(self.settings, "video_width", 1080)
+                video_height = getattr(self.settings, "video_height", 1920)
+                img_clip = img_clip.resize((video_width, video_height))
                 # Apply Ken Burns effect
                 img_clip = self._apply_ken_burns_effect(img_clip, remaining_time)
                 img_clip = img_clip.fadein(0.3)
@@ -1133,6 +1377,680 @@ class VideoRenderer:
             self.logger.debug(f"Ken Burns effect failed: {e}, using static image")
             return clip
 
+    def _create_image_clip(self, image_path: Path, duration: float, apply_ken_burns: bool = True) -> ImageClip:
+        """
+        Create an ImageClip from a path, resize to video dimensions, and optionally apply Ken Burns effect.
+
+        Args:
+            image_path: Path to image file
+            duration: Clip duration
+            apply_ken_burns: Whether to apply Ken Burns effect
+
+        Returns:
+            ImageClip ready for timeline
+        """
+        img_clip = ImageClip(str(image_path)).set_duration(duration)
+        video_width = getattr(self.settings, "video_width", 1080)
+        video_height = getattr(self.settings, "video_height", 1920)
+        img_clip = img_clip.resize((video_width, video_height))
+        
+        if apply_ken_burns:
+            img_clip = self._apply_ken_burns_effect(img_clip, duration)
+        
+        return img_clip
+
+    def _apply_transitions_to_clip(
+        self,
+        clip: ImageClip,
+        scene_idx: int,
+        cut_idx: int,
+        num_cuts: int,
+        total_scenes: int,
+        edit_pattern: Optional[EditPattern],
+        transition_duration: float = 0.5,
+    ) -> ImageClip:
+        """
+        Apply fade transitions to a clip based on position and edit pattern.
+
+        Args:
+            clip: ImageClip to apply transitions to
+            scene_idx: Index of current scene
+            cut_idx: Index of current cut within scene
+            num_cuts: Total number of cuts in scene
+            total_scenes: Total number of scenes
+            edit_pattern: Edit pattern (affects transition style)
+            transition_duration: Base transition duration
+
+        Returns:
+            Clip with transitions applied
+        """
+        if edit_pattern == EditPattern.BROLL_CINEMATIC:
+            # Smooth crossfades
+            if scene_idx > 0 and cut_idx == 0:
+                clip = clip.fadein(transition_duration)
+            elif cut_idx > 0:
+                clip = clip.fadein(0.4)  # Smooth crossfade
+            if scene_idx < total_scenes - 1 and cut_idx == num_cuts - 1:
+                clip = clip.fadeout(transition_duration)
+        elif edit_pattern == EditPattern.MIXED_RAPID:
+            # Quick cuts
+            if scene_idx > 0 and cut_idx == 0:
+                clip = clip.fadein(0.2)
+            elif cut_idx > 0:
+                clip = clip.fadein(0.15)  # Very quick cut
+            if scene_idx < total_scenes - 1 and cut_idx == num_cuts - 1:
+                clip = clip.fadeout(0.2)
+        else:
+            # Default transitions
+            if scene_idx > 0 and cut_idx == 0:
+                clip = clip.fadein(transition_duration)
+            elif cut_idx > 0:
+                clip = clip.fadein(0.2)  # Quick cut transition
+            if scene_idx < total_scenes - 1 and cut_idx == num_cuts - 1:
+                clip = clip.fadeout(transition_duration)
+        
+        return clip
+
+    def _prepare_audio(self, audio_path: Path, target_duration: float) -> tuple[Any, float]:
+        """
+        Load audio and adjust duration to match target.
+
+        Args:
+            audio_path: Path to audio file
+            target_duration: Target duration in seconds
+
+        Returns:
+            Tuple of (audio_clip, final_duration)
+        """
+        audio_clip = AudioFileClip(str(audio_path))
+        audio_duration = audio_clip.duration
+        self.logger.info(f"Audio duration: {audio_duration:.2f} seconds, target: {target_duration}s")
+
+        if audio_duration < target_duration * 0.9:  # If audio is < 90% of target
+            # Loop audio to fill target duration
+            loops_needed = int(target_duration / audio_duration) + 1
+            audio_clips = [audio_clip] * loops_needed
+            from moviepy.editor import concatenate_audioclips
+            extended_audio = concatenate_audioclips(audio_clips)
+            # Trim to exact target duration
+            audio_clip = extended_audio.subclip(0, target_duration)
+            self.logger.info(f"Extending audio from {audio_duration:.2f}s to {target_duration}s (looped {loops_needed}x and trimmed)")
+            final_audio_duration = target_duration
+        elif audio_duration > target_duration * 1.1:  # If audio is > 110% of target
+            # Trim audio to match target
+            audio_clip = audio_clip.subclip(0, target_duration)
+            self.logger.info(f"Trimming audio from {audio_duration:.2f}s to {target_duration}s")
+            final_audio_duration = target_duration
+        else:
+            # Use audio duration as-is (close enough to target, ±10%)
+            final_audio_duration = audio_duration
+            self.logger.info(f"Audio duration ({audio_duration:.2f}s) is close to target ({target_duration}s), using as-is")
+
+        return audio_clip, final_audio_duration
+
+    def _calculate_scene_durations(self, video_plan: VideoPlan, total_audio_duration: float, scene_visuals: list[Path]) -> list[float]:
+        """
+        Calculate duration per scene based on narration lines or equal distribution.
+
+        Args:
+            video_plan: VideoPlan with scenes
+            total_audio_duration: Total audio duration
+            scene_visuals: List of scene visual paths
+
+        Returns:
+            List of durations, one per scene
+        """
+        total_narration_lines = sum(len(scene.narration) for scene in video_plan.scenes)
+        if total_narration_lines == 0:
+            # Fallback: equal duration per scene
+            duration_per_scene = total_audio_duration / len(scene_visuals)
+            return [duration_per_scene] * len(scene_visuals)
+        else:
+            # Weight by narration lines per scene
+            scene_durations = []
+            for scene in video_plan.scenes:
+                scene_narration_count = len(scene.narration)
+                if scene_narration_count > 0:
+                    scene_durations.append((scene_narration_count / total_narration_lines) * total_audio_duration)
+                else:
+                    scene_durations.append(total_audio_duration / len(video_plan.scenes))
+            return scene_durations
+
+    def _get_edit_pattern(self, video_plan: VideoPlan) -> Optional[EditPattern]:
+        """
+        Get and validate edit pattern from video plan.
+
+        Args:
+            video_plan: VideoPlan with metadata
+
+        Returns:
+            EditPattern enum or None
+        """
+        if not video_plan.metadata or not video_plan.metadata.edit_pattern:
+            self.logger.info("No edit pattern set, using default rendering behaviour.")
+            return None
+
+        edit_pattern = video_plan.metadata.edit_pattern
+        # Handle both enum and string (for backward compatibility)
+        if isinstance(edit_pattern, str):
+            try:
+                edit_pattern = EditPattern(edit_pattern)
+            except (ValueError, TypeError):
+                self.logger.warning(f"Invalid edit pattern '{edit_pattern}', defaulting to TALKING_HEAD_HEAVY")
+                edit_pattern = EditPattern.TALKING_HEAD_HEAVY
+
+        self.logger.info(f"Using edit pattern: {edit_pattern.value if isinstance(edit_pattern, EditPattern) else edit_pattern}")
+        return edit_pattern
+
+    def _get_hook_variant_path(self, scene_idx: int, scene_id: int, image_path: Path) -> Optional[Path]:
+        """
+        Get hook variant image path if available.
+
+        Args:
+            scene_idx: Index of scene (0 for HOOK)
+            scene_id: Scene ID
+            image_path: Base image path
+
+        Returns:
+            Path to variant if found, None otherwise
+        """
+        if scene_idx == 0:  # HOOK scene
+            variant_path = image_path.parent / f"scene_{scene_id:02d}_variant.png"
+            if variant_path.exists():
+                self.logger.info(f"Found HOOK variant image: {variant_path.name}")
+                return variant_path
+        return None
+
+    def _get_scene_talking_heads(
+        self, scene_id: int, talking_head_clips: dict[tuple[int, str], Path]
+    ) -> list[tuple[str, Path]]:
+        """
+        Get talking-head clips for a specific scene.
+
+        Args:
+            scene_id: Scene ID
+            talking_head_clips: Mapping of (scene_id, character_id) -> clip_path
+
+        Returns:
+            List of (character_id, clip_path) tuples
+        """
+        return [
+            (char_id, clip_path)
+            for (s_id, char_id), clip_path in talking_head_clips.items()
+            if s_id == scene_id
+        ]
+
+    def _compose_scene_talking_head_heavy(
+        self,
+        scene_idx: int,
+        scene_id: int,
+        scene_duration: float,
+        image_path: Path,
+        hook_variant_path: Optional[Path],
+        scene_talking_heads: list[tuple[str, Path]],
+        scene_visuals: list[Path],
+        transition_duration: float,
+        max_still_duration: float,
+    ) -> list:
+        """
+        Compose a scene using TALKING_HEAD_HEAVY pattern: 65% talking-heads, 35% b-roll.
+
+        Args:
+            scene_idx: Index of scene
+            scene_id: Scene ID
+            scene_duration: Total duration for this scene
+            image_path: Path to scene image
+            hook_variant_path: Optional hook variant image path
+            scene_talking_heads: List of (character_id, clip_path) tuples
+            scene_visuals: List of all scene visuals
+            transition_duration: Transition duration
+            max_still_duration: Maximum duration for still images
+
+        Returns:
+            List of video clips for this scene
+        """
+        video_clips = []
+        self.logger.info(
+            f"Scene {scene_id} (talking_head_heavy): {len(scene_talking_heads)} talking-head clips, "
+            f"allocating 65% to TH, 35% to b-roll"
+        )
+        
+        remaining_duration = scene_duration
+        th_total_duration = scene_duration * 0.65  # 65% for talking-heads
+        broll_total_duration = scene_duration * 0.35  # 35% for b-roll
+        
+        # Distribute talking-head duration across clips
+        th_duration_per_clip = th_total_duration / len(scene_talking_heads) if scene_talking_heads else 0
+        
+        # Start with short b-roll intro
+        if broll_total_duration > 0.5:
+            intro_broll = min(broll_total_duration * 0.3, 2.0)  # 30% of b-roll, max 2s
+            broll_image = hook_variant_path if (scene_idx == 0 and hook_variant_path) else image_path
+            img_clip = self._create_image_clip(broll_image, intro_broll, apply_ken_burns=True)
+            if scene_idx > 0:
+                img_clip = img_clip.fadein(0.3)
+            video_clips.append(img_clip)
+            broll_total_duration -= intro_broll
+        
+        # Insert talking-head clips
+        for i, (char_id, clip_path) in enumerate(scene_talking_heads):
+            if not clip_path.exists():
+                self.logger.warning(f"Talking-head clip not found: {clip_path}")
+                continue
+            
+            talking_head_clip = None
+            try:
+                talking_head_clip = VideoFileClip(str(clip_path))
+                th_duration = min(talking_head_clip.duration, th_duration_per_clip, remaining_duration)
+                if th_duration > 0.5:
+                    if talking_head_clip.duration > th_duration:
+                        talking_head_clip = talking_head_clip.subclip(0, th_duration)
+                    video_clips.append(talking_head_clip)
+                    remaining_duration -= th_duration
+                    talking_head_clip = None  # Ownership transferred
+                    
+                    # Small b-roll between TH clips (if not last)
+                    if i < len(scene_talking_heads) - 1 and broll_total_duration > 0.5:
+                        inter_broll = min(broll_total_duration / (len(scene_talking_heads) - 1), 1.5)
+                        img_clip = self._create_image_clip(image_path, inter_broll, apply_ken_burns=True)
+                        img_clip = img_clip.fadein(0.2)
+                        video_clips.append(img_clip)
+                        broll_total_duration -= inter_broll
+                        remaining_duration -= inter_broll
+            except Exception as e:
+                self.logger.error(f"Failed to load talking-head clip: {e}")
+                # Fallback to b-roll
+                broll_duration = min(th_duration_per_clip, remaining_duration, max_still_duration)
+                if broll_duration > 0.5:
+                    img_clip = self._create_image_clip(image_path, broll_duration, apply_ken_burns=True)
+                    video_clips.append(img_clip)
+                    remaining_duration -= broll_duration
+            finally:
+                if talking_head_clip is not None:
+                    try:
+                        talking_head_clip.close()
+                    except Exception:
+                        pass
+        
+        # Final b-roll if remaining
+        if remaining_duration > 0.5:
+            final_broll = min(remaining_duration, broll_total_duration, max_still_duration)
+            img_clip = self._create_image_clip(image_path, final_broll, apply_ken_burns=True)
+            if scene_idx < len(scene_visuals) - 1:
+                img_clip = img_clip.fadeout(transition_duration)
+            video_clips.append(img_clip)
+        
+        return video_clips
+
+    def _compose_scene_broll_cinematic(
+        self,
+        scene_idx: int,
+        scene_id: int,
+        scene_duration: float,
+        image_path: Path,
+        scene_talking_heads: list[tuple[str, Path]],
+        scene_visuals: list[Path],
+        transition_duration: float,
+    ) -> list:
+        """
+        Compose a scene using BROLL_CINEMATIC pattern: b-roll primary, max 1 short talking-head.
+
+        Args:
+            scene_idx: Index of scene
+            scene_id: Scene ID
+            scene_duration: Total duration for this scene
+            image_path: Path to scene image
+            scene_talking_heads: List of (character_id, clip_path) tuples
+            scene_visuals: List of all scene visuals
+            transition_duration: Transition duration
+
+        Returns:
+            List of video clips for this scene
+        """
+        video_clips = []
+        self.logger.info(
+            f"Scene {scene_id} (broll_cinematic): {len(scene_talking_heads)} talking-head clips, "
+            f"using b-roll as primary, inserting max 1 short TH"
+        )
+        
+        remaining_duration = scene_duration
+        
+        # Use only first talking-head clip, keep it short (max 3s)
+        selected_th = scene_talking_heads[0] if scene_talking_heads else None
+        th_duration = 0.0
+        
+        if selected_th:
+            char_id, clip_path = selected_th
+            if clip_path.exists():
+                talking_head_clip = None
+                try:
+                    talking_head_clip = VideoFileClip(str(clip_path))
+                    th_duration = min(talking_head_clip.duration, 3.0, remaining_duration * 0.2)  # Max 3s, max 20% of scene
+                    if th_duration > 0.5:
+                        if talking_head_clip.duration > th_duration:
+                            talking_head_clip = talking_head_clip.subclip(0, th_duration)
+                        
+                        # Insert TH in middle of scene
+                        broll_before = (remaining_duration - th_duration) * 0.5
+                        broll_after = remaining_duration - th_duration - broll_before
+                        
+                        # B-roll before TH
+                        if broll_before > 0.5:
+                            img_clip = self._create_image_clip(image_path, broll_before, apply_ken_burns=False)
+                            if scene_idx > 0:
+                                img_clip = img_clip.fadein(transition_duration)
+                            video_clips.append(img_clip)
+                        
+                        # Talking-head
+                        video_clips.append(talking_head_clip)
+                        talking_head_clip = None  # Ownership transferred
+                        
+                        # B-roll after TH
+                        if broll_after > 0.5:
+                            img_clip = self._create_image_clip(image_path, broll_after, apply_ken_burns=False)
+                            if scene_idx < len(scene_visuals) - 1:
+                                img_clip = img_clip.fadeout(transition_duration)
+                            video_clips.append(img_clip)
+                        
+                        remaining_duration = 0  # All allocated
+                except Exception as e:
+                    self.logger.error(f"Failed to load talking-head clip: {e}")
+                finally:
+                    if talking_head_clip is not None:
+                        try:
+                            talking_head_clip.close()
+                        except Exception:
+                            pass
+        
+        # If no TH or TH failed, use b-roll for entire scene
+        if remaining_duration > 0.5:
+            # Split into smooth b-roll segments with crossfades
+            num_segments = max(2, int(remaining_duration / 4.0))  # ~4s per segment
+            segment_duration = remaining_duration / num_segments
+            
+            for seg_idx in range(num_segments):
+                img_clip = self._create_image_clip(image_path, segment_duration, apply_ken_burns=False)
+                
+                # Smooth crossfades
+                if scene_idx > 0 and seg_idx == 0:
+                    img_clip = img_clip.fadein(transition_duration)
+                elif seg_idx > 0:
+                    img_clip = img_clip.fadein(0.4)  # Smooth crossfade
+                if scene_idx < len(scene_visuals) - 1 and seg_idx == num_segments - 1:
+                    img_clip = img_clip.fadeout(transition_duration)
+                
+                video_clips.append(img_clip)
+        
+        return video_clips
+
+    def _compose_scene_mixed_rapid(
+        self,
+        scene_idx: int,
+        scene_id: int,
+        scene_duration: float,
+        image_path: Path,
+        hook_variant_path: Optional[Path],
+        scene_talking_heads: list[tuple[str, Path]],
+        scene_visuals: list[Path],
+        current_time: float,
+        early_max_duration: float,
+        later_max_duration: float,
+        max_still_duration: float,
+    ) -> list:
+        """
+        Compose a scene using MIXED_RAPID pattern: fast alternation, shorter clips.
+
+        Args:
+            scene_idx: Index of scene
+            scene_id: Scene ID
+            scene_duration: Total duration for this scene
+            image_path: Path to scene image
+            hook_variant_path: Optional hook variant image path
+            scene_talking_heads: List of (character_id, clip_path) tuples
+            scene_visuals: List of all scene visuals
+            current_time: Current time in video
+            early_max_duration: Max duration for first 10 seconds
+            later_max_duration: Max duration after first 10 seconds
+            max_still_duration: Maximum duration for still images
+
+        Returns:
+            List of video clips for this scene
+        """
+        video_clips = []
+        self.logger.info(
+            f"Scene {scene_id} (mixed_rapid): {len(scene_talking_heads)} talking-head clips, "
+            f"rapid alternation with short clips"
+        )
+        
+        remaining_duration = scene_duration
+        is_early_scene = current_time < 10.0  # First 10 seconds
+        max_clip_duration = early_max_duration if is_early_scene else later_max_duration
+        
+        # Alternate: BROLL → TH → BROLL → TH → ...
+        for i, (char_id, clip_path) in enumerate(scene_talking_heads):
+            # B-roll before talking-head
+            broll_duration = min(max_clip_duration, remaining_duration * 0.4)  # 40% of remaining or max
+            if broll_duration > 0.5:
+                broll_image = hook_variant_path if (scene_idx == 0 and hook_variant_path and i == 0) else image_path
+                img_clip = self._create_image_clip(broll_image, broll_duration, apply_ken_burns=True)
+                if scene_idx > 0 or i > 0:
+                    img_clip = img_clip.fadein(0.2)  # Quick fade
+                video_clips.append(img_clip)
+                remaining_duration -= broll_duration
+
+            # Talking-head clip
+            if not clip_path.exists():
+                self.logger.warning(f"Talking-head clip not found: {clip_path}")
+                continue
+
+            talking_head_clip = None
+            try:
+                talking_head_clip = VideoFileClip(str(clip_path))
+                th_duration = min(talking_head_clip.duration, max_clip_duration, remaining_duration * 0.6)
+                if th_duration > 0.5:
+                    if talking_head_clip.duration > th_duration:
+                        talking_head_clip = talking_head_clip.subclip(0, th_duration)
+                    video_clips.append(talking_head_clip)
+                    remaining_duration -= th_duration
+                    talking_head_clip = None  # Ownership transferred
+            except Exception as e:
+                self.logger.error(f"Failed to load talking-head clip: {e}")
+                # Fallback to b-roll
+                broll_duration = min(max_clip_duration, remaining_duration, max_still_duration)
+                if broll_duration > 0.5:
+                    img_clip = self._create_image_clip(image_path, broll_duration, apply_ken_burns=False)
+                    video_clips.append(img_clip)
+                    remaining_duration -= broll_duration
+            finally:
+                if talking_head_clip is not None:
+                    try:
+                        talking_head_clip.close()
+                    except Exception:
+                        pass
+
+        # Final b-roll if remaining
+        if remaining_duration > 0.5:
+            broll_duration = min(remaining_duration, max_clip_duration)
+            img_clip = self._create_image_clip(image_path, broll_duration, apply_ken_burns=False)
+            if scene_idx < len(scene_visuals) - 1:
+                img_clip = img_clip.fadeout(0.5)
+            video_clips.append(img_clip)
+        
+        return video_clips
+
+    def _compose_scene_default(
+        self,
+        scene_idx: int,
+        scene_id: int,
+        scene_duration: float,
+        image_path: Path,
+        hook_variant_path: Optional[Path],
+        scene_talking_heads: list[tuple[str, Path]],
+        scene_visuals: list[Path],
+        max_still_duration: float,
+    ) -> list:
+        """
+        Compose a scene using default pattern: alternating TH/BROLL.
+
+        Args:
+            scene_idx: Index of scene
+            scene_id: Scene ID
+            scene_duration: Total duration for this scene
+            image_path: Path to scene image
+            hook_variant_path: Optional hook variant image path
+            scene_talking_heads: List of (character_id, clip_path) tuples
+            scene_visuals: List of all scene visuals
+            max_still_duration: Maximum duration for still images
+
+        Returns:
+            List of video clips for this scene
+        """
+        video_clips = []
+        self.logger.info(
+            f"Scene {scene_id} has {len(scene_talking_heads)} talking-head clips, alternating TH/BROLL..."
+        )
+
+        remaining_duration = scene_duration
+        num_segments = len(scene_talking_heads) * 2 + 1  # TH, BROLL, TH, BROLL, ...
+        segment_duration = remaining_duration / num_segments
+
+        # Alternate: BROLL → TH → BROLL → TH → ...
+        for i, (char_id, clip_path) in enumerate(scene_talking_heads):
+            # B-roll before talking-head (except first segment if HOOK)
+            if i > 0 or scene_idx != 0:
+                broll_duration = min(segment_duration, max_still_duration)
+                if broll_duration > 0.5:
+                    # Use variant for HOOK if available
+                    broll_image = hook_variant_path if (scene_idx == 0 and hook_variant_path and i == 0) else image_path
+                    img_clip = self._create_image_clip(broll_image, broll_duration, apply_ken_burns=True)
+                    if scene_idx > 0 or i > 0:
+                        img_clip = img_clip.fadein(0.3)  # Quick fade
+                    video_clips.append(img_clip)
+                    remaining_duration -= broll_duration
+
+            # Talking-head clip
+            if not clip_path.exists():
+                self.logger.warning(f"Talking-head clip not found: {clip_path}")
+                continue
+
+            talking_head_clip = None
+            try:
+                talking_head_clip = VideoFileClip(str(clip_path))
+                th_duration = min(talking_head_clip.duration, remaining_duration)
+                if th_duration > 0.5:
+                    if talking_head_clip.duration > th_duration:
+                        talking_head_clip = talking_head_clip.subclip(0, th_duration)
+                    video_clips.append(talking_head_clip)
+                    remaining_duration -= th_duration
+                    talking_head_clip = None  # Ownership transferred
+            except Exception as e:
+                self.logger.error(f"Failed to load talking-head clip: {e}")
+                # Fallback to b-roll
+                broll_duration = min(segment_duration, remaining_duration, max_still_duration)
+                if broll_duration > 0.5:
+                    img_clip = self._create_image_clip(image_path, broll_duration, apply_ken_burns=False)
+                    video_clips.append(img_clip)
+                    remaining_duration -= broll_duration
+            finally:
+                if talking_head_clip is not None:
+                    try:
+                        talking_head_clip.close()
+                    except Exception:
+                        pass
+
+        # Final b-roll if remaining
+        if remaining_duration > 0.5:
+            broll_duration = min(remaining_duration, max_still_duration)
+            img_clip = self._create_image_clip(image_path, broll_duration, apply_ken_burns=False)
+            if scene_idx < len(scene_visuals) - 1:
+                img_clip = img_clip.fadeout(0.5)
+            video_clips.append(img_clip)
+        
+        return video_clips
+
+    def _compose_scene_narration_only(
+        self,
+        scene_idx: int,
+        scene_duration: float,
+        image_path: Path,
+        hook_variant_path: Optional[Path],
+        scene_visuals: list[Path],
+        edit_pattern: Optional[EditPattern],
+        current_time: float,
+        early_max_duration: float,
+        later_max_duration: float,
+        max_still_duration: float,
+        transition_duration: float,
+    ) -> list:
+        """
+        Compose a narration-only scene (no talking-heads) with pattern-specific cuts.
+
+        Args:
+            scene_idx: Index of scene
+            scene_duration: Total duration for this scene
+            image_path: Path to scene image
+            hook_variant_path: Optional hook variant image path
+            scene_visuals: List of all scene visuals
+            edit_pattern: Edit pattern (affects cut style)
+            current_time: Current time in video
+            early_max_duration: Max duration for first 10 seconds
+            later_max_duration: Max duration after first 10 seconds
+            max_still_duration: Maximum duration for still images
+            transition_duration: Transition duration
+
+        Returns:
+            List of video clips for this scene
+        """
+        video_clips = []
+        self.logger.info(f"Processing scene {scene_idx+1}/{len(scene_visuals)}: {image_path.name} ({scene_duration:.2f}s)")
+
+        is_early_scene = current_time < 10.0  # First 10 seconds
+        
+        # Determine cut strategy based on pattern
+        if edit_pattern == EditPattern.MIXED_RAPID:
+            # Shorter cuts especially in first 10 seconds
+            max_cut_duration = early_max_duration if is_early_scene else later_max_duration
+            if scene_duration > max_cut_duration:
+                num_cuts = max(2, int(scene_duration / max_cut_duration))
+                cut_duration = scene_duration / num_cuts
+                self.logger.info(f"  (mixed_rapid) Splitting into {num_cuts} cuts (max {max_cut_duration}s per cut)")
+            else:
+                num_cuts = 1
+                cut_duration = scene_duration
+        elif edit_pattern == EditPattern.BROLL_CINEMATIC:
+            # Longer, smoother segments with crossfades
+            max_cut_duration = 5.0  # Longer segments for cinematic feel
+            if scene_duration > max_cut_duration:
+                num_cuts = max(2, int(scene_duration / max_cut_duration))
+                cut_duration = scene_duration / num_cuts
+                self.logger.info(f"  (broll_cinematic) Splitting into {num_cuts} smooth segments (max {max_cut_duration}s per segment)")
+            else:
+                num_cuts = 1
+                cut_duration = scene_duration
+        else:
+            # Default: quick cuts if long duration
+            if scene_duration > max_still_duration:
+                num_cuts = max(2, int(scene_duration / max_still_duration))
+                cut_duration = scene_duration / num_cuts
+                self.logger.info(f"  Splitting into {num_cuts} cuts (max {max_still_duration}s per cut)")
+            else:
+                num_cuts = 1
+                cut_duration = scene_duration
+
+        # For HOOK scene, use variant for first cut if available
+        for cut_idx in range(num_cuts):
+            cut_image = hook_variant_path if (scene_idx == 0 and hook_variant_path and cut_idx == 0) else image_path
+            if scene_idx == 0 and hook_variant_path and cut_idx == 0:
+                self.logger.info(f"  Using HOOK variant for first cut")
+            
+            img_clip = self._create_image_clip(cut_image, cut_duration, apply_ken_burns=False)
+            img_clip = self._apply_transitions_to_clip(
+                img_clip, scene_idx, cut_idx, num_cuts, len(scene_visuals), edit_pattern, transition_duration
+            )
+            video_clips.append(img_clip)
+        
+        return video_clips
+
     def _compose_video(
         self,
         video_plan: VideoPlan,
@@ -1171,33 +2089,9 @@ class VideoRenderer:
         character_voice_clips = character_voice_clips or {}
         broll_visuals = broll_visuals or []
 
-        # Load audio to get duration
-        audio_clip = AudioFileClip(str(audio_path))
-        audio_duration = audio_clip.duration
+        # Prepare audio (load and adjust duration)
         target_duration = video_plan.duration_target_seconds
-        self.logger.info(f"Audio duration: {audio_duration:.2f} seconds, target: {target_duration}s")
-
-        # If audio is shorter than target, extend it to match target duration
-        # This ensures the video matches the requested length
-        if audio_duration < target_duration * 0.9:  # If audio is < 90% of target
-            # Loop audio to fill target duration
-            loops_needed = int(target_duration / audio_duration) + 1
-            audio_clips = [audio_clip] * loops_needed
-            from moviepy.editor import concatenate_audioclips
-            extended_audio = concatenate_audioclips(audio_clips)
-            # Trim to exact target duration
-            audio_clip = extended_audio.subclip(0, target_duration)
-            self.logger.info(f"Extending audio from {audio_duration:.2f}s to {target_duration}s (looped {loops_needed}x and trimmed)")
-            final_audio_duration = target_duration
-        elif audio_duration > target_duration * 1.1:  # If audio is > 110% of target
-            # Trim audio to match target
-            audio_clip = audio_clip.subclip(0, target_duration)
-            self.logger.info(f"Trimming audio from {audio_duration:.2f}s to {target_duration}s")
-            final_audio_duration = target_duration
-        else:
-            # Use audio duration as-is (close enough to target, ±10%)
-            final_audio_duration = audio_duration
-            self.logger.info(f"Audio duration ({audio_duration:.2f}s) is close to target ({target_duration}s), using as-is")
+        audio_clip, final_audio_duration = self._prepare_audio(audio_path, target_duration)
 
         # Build timeline with character clips inserted between narration segments
         use_character_clips = character_voice_clips and video_plan.character_spoken_lines and len(character_voice_clips) > 0
@@ -1212,43 +2106,20 @@ class VideoRenderer:
                 video_plan, audio_path, scene_visuals, talking_head_clips, character_voice_clips, target_duration, final_audio_duration
             )
             # Timeline is already built, skip scene-by-scene building and go to concatenation
-            # (continue to audio setting and video writing below)
         else:
-            # Fallback to original logic (narration-only or old dialogue-based talking heads)
+            # Build timeline scene-by-scene using edit patterns
             # Calculate duration per scene based on narration lines
-            total_narration_lines = sum(len(scene.narration) for scene in video_plan.scenes)
-            if total_narration_lines == 0:
-                # Fallback: equal duration per scene
-                duration_per_scene = final_audio_duration / len(scene_visuals)
-                scene_durations = [duration_per_scene] * len(scene_visuals)
-            else:
-                # Weight by narration lines per scene
-                scene_durations = []
-                for scene in video_plan.scenes:
-                    scene_narration_count = len(scene.narration)
-                    if scene_narration_count > 0:
-                        scene_durations.append((scene_narration_count / total_narration_lines) * final_audio_duration)
-                    else:
-                        scene_durations.append(final_audio_duration / len(video_plan.scenes))
+            scene_durations = self._calculate_scene_durations(video_plan, final_audio_duration, scene_visuals)
             
-            # Build timeline using original logic (continue with existing code below)
-            video_clips = []
-
             # Get edit pattern
-            edit_pattern = None
-            if video_plan.metadata and video_plan.metadata.edit_pattern:
-                edit_pattern = video_plan.metadata.edit_pattern
-                self.logger.info(f"Using edit pattern: {edit_pattern}")
-            else:
-                self.logger.info("No edit pattern set, using default rendering behaviour.")
-
-            # Build timeline: collect all clips (scene visuals + talking-head clips + B-roll)
-            current_time = 0.0
-            transition_duration = 0.5
-            max_still_duration = 3.5  # Max duration for a single still image (avoid > 3-4 seconds)
+            edit_pattern = self._get_edit_pattern(video_plan)
+            
+            # Build timeline using pattern-specific methods
+            video_clips = []
             
             # Pattern-specific parameters
-            if edit_pattern == "mixed_rapid":
+            max_still_duration = 3.5  # Max duration for a single still image (avoid > 3-4 seconds)
+            if edit_pattern == EditPattern.MIXED_RAPID:
                 # Shorter clips especially in first 10 seconds
                 early_max_duration = 2.0  # Hard cap for first 10 seconds
                 later_max_duration = 3.5
@@ -1256,6 +2127,8 @@ class VideoRenderer:
                 early_max_duration = max_still_duration
                 later_max_duration = max_still_duration
 
+            # Build timeline scene-by-scene
+            current_time = 0.0
             for scene_idx, (scene, image_path, scene_duration) in enumerate(
                 zip(video_plan.scenes, scene_visuals, scene_durations)
             ):
@@ -1265,358 +2138,49 @@ class VideoRenderer:
                     continue
 
                 scene_id = scene.scene_id
-                is_hook_scene = scene_idx == 0
-
-                # Check for HOOK variant image (if available)
-                hook_variant_path = None
-                if is_hook_scene:
-                    variant_path = image_path.parent / f"scene_{scene.scene_id:02d}_variant.png"
-                    if variant_path.exists():
-                        hook_variant_path = variant_path
-                        self.logger.info(f"Found HOOK variant image: {variant_path.name}")
-
-                # Check if this scene has talking-head clips
-                scene_talking_heads = [
-                    (char_id, clip_path)
-                    for (s_id, char_id), clip_path in talking_head_clips.items()
-                    if s_id == scene_id
-                ]
+                
+                # Get hook variant if available
+                hook_variant_path = self._get_hook_variant_path(scene_idx, scene_id, image_path)
+                
+                # Get talking-head clips for this scene
+                scene_talking_heads = self._get_scene_talking_heads(scene_id, talking_head_clips)
 
                 if scene_talking_heads and self.use_talking_heads:
                     # Apply edit pattern logic for dialogue-heavy scenes
-                    if edit_pattern == "talking_head_heavy":
-                        # Favor talking-head clips: 60-70% of scene duration
-                        self.logger.info(
-                            f"Scene {scene_id} (talking_head_heavy): {len(scene_talking_heads)} talking-head clips, "
-                            f"allocating 65% to TH, 35% to b-roll"
+                    if edit_pattern == EditPattern.TALKING_HEAD_HEAVY:
+                        scene_clips = self._compose_scene_talking_head_heavy(
+                            scene_idx, scene_id, scene_duration, image_path, hook_variant_path,
+                            scene_talking_heads, scene_visuals, transition_duration, max_still_duration
                         )
-                        remaining_duration = scene_duration
-                        th_total_duration = scene_duration * 0.65  # 65% for talking-heads
-                        broll_total_duration = scene_duration * 0.35  # 35% for b-roll
-                        
-                        # Distribute talking-head duration across clips
-                        th_duration_per_clip = th_total_duration / len(scene_talking_heads)
-                        
-                        # Start with short b-roll intro
-                        if broll_total_duration > 0.5:
-                            intro_broll = min(broll_total_duration * 0.3, 2.0)  # 30% of b-roll, max 2s
-                            broll_image = hook_variant_path if (is_hook_scene and hook_variant_path) else image_path
-                            img_clip = ImageClip(str(broll_image)).set_duration(intro_broll)
-                            img_clip = img_clip.resize((1080, 1920))
-                            # Apply Ken Burns effect
-                            img_clip = self._apply_ken_burns_effect(img_clip, intro_broll)
-                            if scene_idx > 0:
-                                img_clip = img_clip.fadein(0.3)
-                            video_clips.append(img_clip)
-                            broll_total_duration -= intro_broll
-                        
-                        # Insert talking-head clips
-                        for i, (char_id, clip_path) in enumerate(scene_talking_heads):
-                            if not clip_path.exists():
-                                self.logger.warning(f"Talking-head clip not found: {clip_path}")
-                                continue
-                            
-                            try:
-                                talking_head_clip = VideoFileClip(str(clip_path))
-                                th_duration = min(talking_head_clip.duration, th_duration_per_clip, remaining_duration)
-                                if th_duration > 0.5:
-                                    if talking_head_clip.duration > th_duration:
-                                        talking_head_clip = talking_head_clip.subclip(0, th_duration)
-                                    video_clips.append(talking_head_clip)
-                                    remaining_duration -= th_duration
-                                    
-                                    # Small b-roll between TH clips (if not last)
-                                    if i < len(scene_talking_heads) - 1 and broll_total_duration > 0.5:
-                                        inter_broll = min(broll_total_duration / (len(scene_talking_heads) - 1), 1.5)
-                                        img_clip = ImageClip(str(image_path)).set_duration(inter_broll)
-                                        img_clip = img_clip.resize((1080, 1920))
-                                        # Apply Ken Burns effect
-                                        img_clip = self._apply_ken_burns_effect(img_clip, inter_broll)
-                                        img_clip = img_clip.fadein(0.2)
-                                        video_clips.append(img_clip)
-                                        broll_total_duration -= inter_broll
-                                        remaining_duration -= inter_broll
-                            except Exception as e:
-                                self.logger.error(f"Failed to load talking-head clip: {e}")
-                                # Fallback to b-roll
-                                broll_duration = min(th_duration_per_clip, remaining_duration, max_still_duration)
-                                if broll_duration > 0.5:
-                                    img_clip = ImageClip(str(image_path)).set_duration(broll_duration)
-                                    img_clip = img_clip.resize((1080, 1920))
-                                    # Apply Ken Burns effect
-                                    img_clip = self._apply_ken_burns_effect(img_clip, broll_duration)
-                                    video_clips.append(img_clip)
-                                    remaining_duration -= broll_duration
-                        
-                        # Final b-roll if remaining
-                        if remaining_duration > 0.5:
-                            final_broll = min(remaining_duration, broll_total_duration, max_still_duration)
-                            img_clip = ImageClip(str(image_path)).set_duration(final_broll)
-                            img_clip = img_clip.resize((1080, 1920))
-                            # Apply Ken Burns effect
-                            img_clip = self._apply_ken_burns_effect(img_clip, final_broll)
-                            if scene_idx < len(scene_visuals) - 1:
-                                img_clip = img_clip.fadeout(transition_duration)
-                            video_clips.append(img_clip)
-                    
-                    elif edit_pattern == "broll_cinematic":
-                        # Use b-roll as primary, only occasionally insert talking-head (max 1 per scene, short)
-                        self.logger.info(
-                            f"Scene {scene_id} (broll_cinematic): {len(scene_talking_heads)} talking-head clips, "
-                            f"using b-roll as primary, inserting max 1 short TH"
+                        video_clips.extend(scene_clips)
+                    elif edit_pattern == EditPattern.BROLL_CINEMATIC:
+                        scene_clips = self._compose_scene_broll_cinematic(
+                            scene_idx, scene_id, scene_duration, image_path,
+                            scene_talking_heads, scene_visuals, transition_duration
                         )
-                        remaining_duration = scene_duration
-                        
-                        # Use only first talking-head clip, keep it short (max 3s)
-                        selected_th = scene_talking_heads[0] if scene_talking_heads else None
-                        th_duration = 0.0
-                        
-                        if selected_th:
-                            char_id, clip_path = selected_th
-                            if clip_path.exists():
-                                try:
-                                    talking_head_clip = VideoFileClip(str(clip_path))
-                                    th_duration = min(talking_head_clip.duration, 3.0, remaining_duration * 0.2)  # Max 3s, max 20% of scene
-                                    if th_duration > 0.5:
-                                        if talking_head_clip.duration > th_duration:
-                                            talking_head_clip = talking_head_clip.subclip(0, th_duration)
-                                        
-                                        # Insert TH in middle of scene
-                                        broll_before = (remaining_duration - th_duration) * 0.5
-                                        broll_after = remaining_duration - th_duration - broll_before
-                                        
-                                        # B-roll before TH
-                                        if broll_before > 0.5:
-                                            img_clip = ImageClip(str(image_path)).set_duration(broll_before)
-                                            img_clip = img_clip.resize((1080, 1920))
-                                            if scene_idx > 0:
-                                                img_clip = img_clip.fadein(transition_duration)
-                                            video_clips.append(img_clip)
-                                        
-                                        # Talking-head
-                                        video_clips.append(talking_head_clip)
-                                        
-                                        # B-roll after TH
-                                        if broll_after > 0.5:
-                                            img_clip = ImageClip(str(image_path)).set_duration(broll_after)
-                                            img_clip = img_clip.resize((1080, 1920))
-                                            if scene_idx < len(scene_visuals) - 1:
-                                                img_clip = img_clip.fadeout(transition_duration)
-                                            video_clips.append(img_clip)
-                                        
-                                        remaining_duration = 0  # All allocated
-                                except Exception as e:
-                                    self.logger.error(f"Failed to load talking-head clip: {e}")
-                        
-                        # If no TH or TH failed, use b-roll for entire scene
-                        if remaining_duration > 0.5:
-                            # Split into smooth b-roll segments with crossfades
-                            num_segments = max(2, int(remaining_duration / 4.0))  # ~4s per segment
-                            segment_duration = remaining_duration / num_segments
-                            
-                            for seg_idx in range(num_segments):
-                                img_clip = ImageClip(str(image_path)).set_duration(segment_duration)
-                                img_clip = img_clip.resize((1080, 1920))
-                                
-                                # Smooth crossfades
-                                if scene_idx > 0 and seg_idx == 0:
-                                    img_clip = img_clip.fadein(transition_duration)
-                                elif seg_idx > 0:
-                                    img_clip = img_clip.fadein(0.4)  # Smooth crossfade
-                                if scene_idx < len(scene_visuals) - 1 and seg_idx == num_segments - 1:
-                                    img_clip = img_clip.fadeout(transition_duration)
-                                
-                                video_clips.append(img_clip)
-                    
-                    elif edit_pattern == "mixed_rapid":
-                        # Fast alternation, shorter clips especially in first 10 seconds
-                        self.logger.info(
-                            f"Scene {scene_id} (mixed_rapid): {len(scene_talking_heads)} talking-head clips, "
-                            f"rapid alternation with short clips"
+                        video_clips.extend(scene_clips)
+                    elif edit_pattern == EditPattern.MIXED_RAPID:
+                        scene_clips = self._compose_scene_mixed_rapid(
+                            scene_idx, scene_id, scene_duration, image_path, hook_variant_path,
+                            scene_talking_heads, scene_visuals, current_time,
+                            early_max_duration, later_max_duration, max_still_duration
                         )
-                        remaining_duration = scene_duration
-                        is_early_scene = current_time < 10.0  # First 10 seconds
-                        max_clip_duration = early_max_duration if is_early_scene else later_max_duration
-                        
-                        # Alternate: BROLL → TH → BROLL → TH → ...
-                        for i, (char_id, clip_path) in enumerate(scene_talking_heads):
-                            # B-roll before talking-head
-                            broll_duration = min(max_clip_duration, remaining_duration * 0.4)  # 40% of remaining or max
-                            if broll_duration > 0.5:
-                                broll_image = hook_variant_path if (is_hook_scene and hook_variant_path and i == 0) else image_path
-                                img_clip = ImageClip(str(broll_image)).set_duration(broll_duration)
-                                img_clip = img_clip.resize((1080, 1920))
-                                # Apply Ken Burns effect
-                                img_clip = self._apply_ken_burns_effect(img_clip, broll_duration)
-                                if scene_idx > 0 or i > 0:
-                                    img_clip = img_clip.fadein(0.2)  # Quick fade
-                                video_clips.append(img_clip)
-                                remaining_duration -= broll_duration
-
-                            # Talking-head clip
-                            if not clip_path.exists():
-                                self.logger.warning(f"Talking-head clip not found: {clip_path}")
-                                continue
-
-                            try:
-                                talking_head_clip = VideoFileClip(str(clip_path))
-                                th_duration = min(talking_head_clip.duration, max_clip_duration, remaining_duration * 0.6)
-                                if th_duration > 0.5:
-                                    if talking_head_clip.duration > th_duration:
-                                        talking_head_clip = talking_head_clip.subclip(0, th_duration)
-                                    video_clips.append(talking_head_clip)
-                                    remaining_duration -= th_duration
-                            except Exception as e:
-                                self.logger.error(f"Failed to load talking-head clip: {e}")
-                                # Fallback to b-roll
-                                broll_duration = min(max_clip_duration, remaining_duration, max_still_duration)
-                                if broll_duration > 0.5:
-                                    img_clip = ImageClip(str(image_path)).set_duration(broll_duration)
-                                    img_clip = img_clip.resize((1080, 1920))
-                                    video_clips.append(img_clip)
-                                    remaining_duration -= broll_duration
-
-                        # Final b-roll if remaining
-                        if remaining_duration > 0.5:
-                            broll_duration = min(remaining_duration, max_clip_duration)
-                            img_clip = ImageClip(str(image_path)).set_duration(broll_duration)
-                            img_clip = img_clip.resize((1080, 1920))
-                            if scene_idx < len(scene_visuals) - 1:
-                                img_clip = img_clip.fadeout(transition_duration)
-                            video_clips.append(img_clip)
-                    
+                        video_clips.extend(scene_clips)
                     else:
-                        # Default behavior (existing logic)
-                        self.logger.info(
-                            f"Scene {scene_id} has {len(scene_talking_heads)} talking-head clips, alternating TH/BROLL..."
+                        # Default behavior
+                        scene_clips = self._compose_scene_default(
+                            scene_idx, scene_id, scene_duration, image_path, hook_variant_path,
+                            scene_talking_heads, scene_visuals, max_still_duration
                         )
-
-                        remaining_duration = scene_duration
-                        num_segments = len(scene_talking_heads) * 2 + 1  # TH, BROLL, TH, BROLL, ...
-                        segment_duration = remaining_duration / num_segments
-
-                        # Alternate: BROLL → TH → BROLL → TH → ...
-                        for i, (char_id, clip_path) in enumerate(scene_talking_heads):
-                            # B-roll before talking-head (except first segment if HOOK)
-                            if i > 0 or not is_hook_scene:
-                                broll_duration = min(segment_duration, max_still_duration)
-                                if broll_duration > 0.5:
-                                    # Use variant for HOOK if available
-                                    broll_image = hook_variant_path if (is_hook_scene and hook_variant_path and i == 0) else image_path
-                                    img_clip = ImageClip(str(broll_image)).set_duration(broll_duration)
-                                    img_clip = img_clip.resize((1080, 1920))
-                                    # Apply Ken Burns effect
-                                    img_clip = self._apply_ken_burns_effect(img_clip, broll_duration)
-                                    if scene_idx > 0 or i > 0:
-                                        img_clip = img_clip.fadein(0.3)  # Quick fade
-                                    video_clips.append(img_clip)
-                                    remaining_duration -= broll_duration
-
-                            # Talking-head clip
-                            if not clip_path.exists():
-                                self.logger.warning(f"Talking-head clip not found: {clip_path}")
-                                continue
-
-                            try:
-                                talking_head_clip = VideoFileClip(str(clip_path))
-                                th_duration = min(talking_head_clip.duration, remaining_duration)
-                                if th_duration > 0.5:
-                                    if talking_head_clip.duration > th_duration:
-                                        talking_head_clip = talking_head_clip.subclip(0, th_duration)
-                                    video_clips.append(talking_head_clip)
-                                    remaining_duration -= th_duration
-                            except Exception as e:
-                                self.logger.error(f"Failed to load talking-head clip: {e}")
-                                # Fallback to b-roll
-                                broll_duration = min(segment_duration, remaining_duration, max_still_duration)
-                                if broll_duration > 0.5:
-                                    img_clip = ImageClip(str(image_path)).set_duration(broll_duration)
-                                    img_clip = img_clip.resize((1080, 1920))
-                                    video_clips.append(img_clip)
-                                    remaining_duration -= broll_duration
-
-                        # Final b-roll if remaining
-                        if remaining_duration > 0.5:
-                            broll_duration = min(remaining_duration, max_still_duration)
-                            img_clip = ImageClip(str(image_path)).set_duration(broll_duration)
-                            img_clip = img_clip.resize((1080, 1920))
-                            if scene_idx < len(scene_visuals) - 1:
-                                img_clip = img_clip.fadeout(transition_duration)
-                            video_clips.append(img_clip)
-
+                        video_clips.extend(scene_clips)
                 else:
                     # Narration-only scene: Use b-roll with pattern-specific cuts
-                    self.logger.info(f"Processing scene {scene_idx+1}/{len(scene_visuals)}: {image_path.name} ({scene_duration:.2f}s)")
-
-                is_early_scene = current_time < 10.0  # First 10 seconds
-                
-                if edit_pattern == "mixed_rapid":
-                    # Shorter cuts especially in first 10 seconds
-                    max_cut_duration = early_max_duration if is_early_scene else later_max_duration
-                    if scene_duration > max_cut_duration:
-                        num_cuts = max(2, int(scene_duration / max_cut_duration))
-                        cut_duration = scene_duration / num_cuts
-                        self.logger.info(f"  (mixed_rapid) Splitting into {num_cuts} cuts (max {max_cut_duration}s per cut)")
-                    else:
-                        num_cuts = 1
-                        cut_duration = scene_duration
-                elif edit_pattern == "broll_cinematic":
-                    # Longer, smoother segments with crossfades
-                    max_cut_duration = 5.0  # Longer segments for cinematic feel
-                    if scene_duration > max_cut_duration:
-                        num_cuts = max(2, int(scene_duration / max_cut_duration))
-                        cut_duration = scene_duration / num_cuts
-                        self.logger.info(f"  (broll_cinematic) Splitting into {num_cuts} smooth segments (max {max_cut_duration}s per segment)")
-                    else:
-                        num_cuts = 1
-                        cut_duration = scene_duration
-                else:
-                    # Default: quick cuts if long duration
-                    if scene_duration > max_still_duration:
-                        num_cuts = max(2, int(scene_duration / max_still_duration))
-                        cut_duration = scene_duration / num_cuts
-                        self.logger.info(f"  Splitting into {num_cuts} cuts (max {max_still_duration}s per cut)")
-                    else:
-                        num_cuts = 1
-                        cut_duration = scene_duration
-
-                # For HOOK scene, use variant for first cut if available
-                for cut_idx in range(num_cuts):
-                    cut_image = image_path
-                    if is_hook_scene and hook_variant_path and cut_idx == 0:
-                        cut_image = hook_variant_path
-                        self.logger.info(f"  Using HOOK variant for first cut")
-                    
-                    img_clip = ImageClip(str(cut_image)).set_duration(cut_duration)
-                    img_clip = img_clip.resize((1080, 1920))
-                    
-                    # Add transitions based on pattern
-                    if edit_pattern == "broll_cinematic":
-                        # Smooth crossfades
-                        if scene_idx > 0 and cut_idx == 0:
-                            img_clip = img_clip.fadein(transition_duration)
-                        elif cut_idx > 0:
-                            img_clip = img_clip.fadein(0.4)  # Smooth crossfade
-                        if scene_idx < len(scene_visuals) - 1 and cut_idx == num_cuts - 1:
-                            img_clip = img_clip.fadeout(transition_duration)
-                    elif edit_pattern == "mixed_rapid":
-                        # Quick cuts
-                        if scene_idx > 0 and cut_idx == 0:
-                            img_clip = img_clip.fadein(0.2)
-                        elif cut_idx > 0:
-                            img_clip = img_clip.fadein(0.15)  # Very quick cut
-                        if scene_idx < len(scene_visuals) - 1 and cut_idx == num_cuts - 1:
-                            img_clip = img_clip.fadeout(0.2)
-                    else:
-                        # Default transitions
-                        if scene_idx > 0 and cut_idx == 0:
-                            img_clip = img_clip.fadein(transition_duration)
-                        elif cut_idx > 0:
-                            img_clip = img_clip.fadein(0.2)  # Quick cut transition
-                        if scene_idx < len(scene_visuals) - 1 and cut_idx == num_cuts - 1:
-                            img_clip = img_clip.fadeout(transition_duration)
-                    
-                    video_clips.append(img_clip)
+                    scene_clips = self._compose_scene_narration_only(
+                        scene_idx, scene_duration, image_path, hook_variant_path,
+                        scene_visuals, edit_pattern, current_time,
+                        early_max_duration, later_max_duration, max_still_duration, transition_duration
+                    )
+                    video_clips.extend(scene_clips)
 
                 current_time += scene_duration
 
@@ -1625,56 +2189,71 @@ class VideoRenderer:
 
         # Concatenate all clips with transitions
         self.logger.info("Concatenating video clips with fade transitions...")
-        final_video = concatenate_videoclips(video_clips, method="compose", padding=-transition_duration if not use_character_clips else -0.5)
-
-        # Add narration text overlay (optional - can be disabled)
-        # For now, we'll skip text overlay to keep it clean
-        # But the structure is here if needed
-
-        # Set audio (composite narration + character audio if character clips exist)
-        self.logger.info("Adding audio to video...")
-        use_character_clips = character_voice_clips and video_plan.character_spoken_lines and len(character_voice_clips) > 0
+        final_video = None
+        composite_audio = None
+        audio_clip_for_cleanup = None
         
-        if use_character_clips:
-            # Composite narration audio with character audio clips
-            composite_audio = self._build_composite_audio(
-                audio_path, character_voice_clips, video_plan.character_spoken_lines, final_audio_duration
+        try:
+            final_video = concatenate_videoclips(video_clips, method="compose", padding=-transition_duration if not use_character_clips else -0.5)
+
+            # Add narration text overlay (optional - can be disabled)
+            # For now, we'll skip text overlay to keep it clean
+            # But the structure is here if needed
+
+            # Set audio (composite narration + character audio if character clips exist)
+            self.logger.info("Adding audio to video...")
+            use_character_clips = character_voice_clips and video_plan.character_spoken_lines and len(character_voice_clips) > 0
+            
+            if use_character_clips:
+                # Composite narration audio with character audio clips
+                composite_audio = self._build_composite_audio(
+                    audio_path, character_voice_clips, video_plan.character_spoken_lines, final_audio_duration
+                )
+                final_video = final_video.set_audio(composite_audio)
+            else:
+                audio_clip_for_cleanup = audio_clip
+                final_video = final_video.set_audio(audio_clip)
+
+            # Set FPS
+            final_video = final_video.set_fps(30)
+
+            # Write video file
+            self.logger.info(f"Rendering video to: {output_path}...")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            final_video.write_videofile(
+                str(output_path),
+                codec="libx264",
+                audio_codec="aac",
+                fps=30,
+                preset="medium",
+                bitrate="8000k",
+                logger=None,  # Suppress MoviePy verbose logging
             )
-            final_video = final_video.set_audio(composite_audio)
-        else:
-            final_video = final_video.set_audio(audio_clip)
 
-        # Set FPS
-        final_video = final_video.set_fps(30)
+            # Get final video duration
+            final_video_duration = final_video.duration
 
-        # Write video file
-        self.logger.info(f"Rendering video to: {output_path}...")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        final_video.write_videofile(
-            str(output_path),
-            codec="libx264",
-            audio_codec="aac",
-            fps=30,
-            preset="medium",
-            bitrate="8000k",
-            logger=None,  # Suppress MoviePy verbose logging
-        )
-
-        # Get final video duration
-        final_video_duration = final_video.duration
-
-        # Clean up
-        final_video.close()
-        use_character_clips = character_voice_clips and video_plan.character_spoken_lines and len(character_voice_clips) > 0
-        
-        if not use_character_clips:
-            audio_clip.close()
-        # Composite audio cleanup handled in _build_composite_audio (clips are closed there)
-
-        self.logger.info(f"Successfully created video: {output_path}")
-        self.logger.info(f"Video duration: {final_video_duration:.2f} seconds, Audio duration: {final_audio_duration:.2f} seconds (target: {target_duration}s)")
-        
-        # Return video and audio durations for metadata
-        return final_video_duration, final_audio_duration
+            self.logger.info(f"Successfully created video: {output_path}")
+            self.logger.info(f"Video duration: {final_video_duration:.2f} seconds, Audio duration: {final_audio_duration:.2f} seconds (target: {target_duration}s)")
+            
+            # Return video and audio durations for metadata
+            return final_video_duration, final_audio_duration
+            
+        finally:
+            # Clean up MoviePy clips to prevent memory leaks
+            if final_video is not None:
+                try:
+                    final_video.close()
+                except Exception as e:
+                    self.logger.warning(f"Error closing final_video: {e}")
+            
+            if audio_clip_for_cleanup is not None:
+                try:
+                    audio_clip_for_cleanup.close()
+                except Exception as e:
+                    self.logger.warning(f"Error closing audio_clip: {e}")
+            
+            # Composite audio cleanup handled in _build_composite_audio (clips are closed there)
+            # Individual video clips in video_clips list will be closed when final_video is closed
 

@@ -12,24 +12,13 @@ from app.models.schemas import (
     CharacterSet,
     CharacterSpokenLine,
     DialoguePlan,
+    EditPattern,
     EpisodeMetadata,
     NarrationPlan,
     StoryScript,
     VideoPlan,
     VideoScene,
 )
-
-# Edit pattern constants
-EDIT_PATTERN_TALKING_HEAD_HEAVY = "talking_head_heavy"
-EDIT_PATTERN_BROLL_CINEMATIC = "broll_cinematic"
-EDIT_PATTERN_MIXED_RAPID = "mixed_rapid"
-
-# Valid edit patterns
-VALID_EDIT_PATTERNS = [
-    EDIT_PATTERN_TALKING_HEAD_HEAVY,
-    EDIT_PATTERN_BROLL_CINEMATIC,
-    EDIT_PATTERN_MIXED_RAPID,
-]
 
 
 class VideoPlanEngine:
@@ -89,6 +78,20 @@ class VideoPlanEngine:
             # Get narration for this scene
             scene_narration = [n for n in narration_plan.lines if n.scene_id == scene.scene_id]
 
+            # Get emotional marker from scene (if available)
+            scene_emotion = getattr(scene, "emotion", None)
+            if not scene_emotion:
+                # Fallback: detect emotion from scene role
+                scene_role = self._detect_scene_role_from_description(scene.description)
+                emotion_map = {
+                    "hook": "shocked",
+                    "setup": "tense",
+                    "conflict": "angered",
+                    "twist": "shocked",
+                    "resolution": "relieved",
+                }
+                scene_emotion = emotion_map.get(scene_role, "tense")
+
             # Generate background prompt
             background_prompt = self._generate_background_prompt(scene, style)
 
@@ -106,9 +109,19 @@ class VideoPlanEngine:
                 narration=scene_narration,
                 dialogue=scene_dialogue,
                 b_roll_prompts=b_roll_prompts,
+                emotion=scene_emotion,  # Add emotional marker
             )
 
             video_scenes.append(video_scene)
+
+        # Ensure first visual scene is explicitly linked to HOOK text
+        if video_scenes and story_script.scenes:
+            first_scene = story_script.scenes[0]
+            first_video_scene = video_scenes[0]
+            # If first scene has HOOK narration, ensure it's prominently featured
+            hook_narration = [n for n in first_video_scene.narration if "HOOK" in n.text.upper() or first_scene.scene_id == 1]
+            if hook_narration:
+                self.logger.info(f"First scene explicitly linked to HOOK: {hook_narration[0].text[:50]}...")
 
         # Count beats (from scenes - each scene represents a beat in beat-based generation)
         # For legacy generation, count scenes as beats
@@ -160,14 +173,20 @@ class VideoPlanEngine:
             edit_pattern=edit_pattern,
         )
 
-        # Sample 2-4 dialogue lines for character speech (not narrator)
-        character_spoken_lines = self._sample_character_spoken_lines(
-            dialogue_plan, video_scenes, character_set.characters
+        # Sample character spoken lines with improved timing (every 8-12 seconds)
+        # and ensure they're tied to reveals/contradictions
+        character_spoken_lines = self._sample_character_spoken_lines_with_timing(
+            dialogue_plan, video_scenes, character_set.characters, duration_seconds
         )
 
         # Generate 4-6 cinematic B-roll scenes
         b_roll_scenes = self._generate_cinematic_broll_scenes(
             story_script, video_scenes, style, niche, primary_emotion, duration_seconds
+        )
+
+        # Calculate reveal points (timestamps when revelations occur)
+        reveal_points = self._calculate_reveal_points(
+            character_spoken_lines, video_scenes, duration_seconds
         )
 
         video_plan = VideoPlan(
@@ -184,30 +203,83 @@ class VideoPlanEngine:
             created_at=datetime.datetime.utcnow().isoformat(),
             version="1.0",
             metadata=metadata,
+            reveal_points=reveal_points,  # Optional field
         )
 
         self.logger.info(f"Created video plan with {len(video_scenes)} scenes and {len(character_set.characters)} characters")
         self.logger.info(f"Metadata: {num_beats} beats, {num_dialogue_lines} dialogue lines, {num_narration_lines} narration lines")
         self.logger.info(f"Character spoken lines: {len(character_spoken_lines)} (sampled from {num_dialogue_lines} dialogue lines)")
+        self.logger.info(f"Reveal points: {len(reveal_points)} timestamps at {reveal_points}")
         self.logger.info(f"Edit pattern: {edit_pattern}")
         return video_plan
 
-    def _sample_character_spoken_lines(
+    def _calculate_reveal_points(
+        self,
+        character_spoken_lines: list[CharacterSpokenLine],
+        video_scenes: list[VideoScene],
+        duration_seconds: int,
+    ) -> list[int]:
+        """
+        Calculate reveal points (timestamps in seconds) when revelations occur.
+
+        Args:
+            character_spoken_lines: Character spoken lines
+            video_scenes: Video scenes
+            duration_seconds: Total duration
+
+        Returns:
+            List of reveal point timestamps (in seconds, as integers)
+        """
+        reveal_points = []
+        
+        # Keywords that indicate revelations
+        reveal_keywords = ["not", "never", "didn't", "wasn't", "can't", "won't", "actually", "truth", "real", "really", "secret", "hidden", "found out", "discovered"]
+        contradiction_keywords = ["but", "however", "except", "though", "although", "despite"]
+        
+        # Check character spoken lines for reveals
+        for line in character_spoken_lines:
+            text_lower = line.line_text.lower()
+            if any(kw in text_lower for kw in reveal_keywords + contradiction_keywords):
+                timestamp = int(line.approx_timing_seconds)
+                if 0 <= timestamp <= duration_seconds:
+                    reveal_points.append(timestamp)
+        
+        # Also check scene descriptions for TURNING_POINT or TWIST beats
+        for scene in video_scenes:
+            desc_lower = scene.description.lower()
+            if "turning_point" in desc_lower or "twist" in desc_lower or "reveal" in desc_lower:
+                # Estimate timestamp based on scene position
+                scene_idx = scene.scene_id - 1
+                total_scenes = len(video_scenes)
+                if total_scenes > 0:
+                    estimated_time = int((scene_idx / total_scenes) * duration_seconds)
+                    if estimated_time not in reveal_points:
+                        reveal_points.append(estimated_time)
+        
+        # Sort and deduplicate
+        reveal_points = sorted(list(set(reveal_points)))
+        
+        return reveal_points
+
+    def _sample_character_spoken_lines_with_timing(
         self,
         dialogue_plan: DialoguePlan,
         video_scenes: list[VideoScene],
         characters: list[Any],
+        duration_seconds: int,
     ) -> list[CharacterSpokenLine]:
         """
-        Sample 2-4 dialogue lines that should be spoken by characters (not narrator).
+        Sample character spoken lines ensuring they occur every 8-12 seconds
+        and are tied to reveals/contradictions.
 
         Args:
             dialogue_plan: Dialogue plan with all dialogue lines
             video_scenes: Video scenes for timing context
             characters: List of characters
+            duration_seconds: Total video duration
 
         Returns:
-            List of CharacterSpokenLine objects (2-4 lines)
+            List of CharacterSpokenLine objects (spaced every 8-12 seconds)
         """
         import random
 
@@ -221,11 +293,10 @@ class VideoPlanEngine:
             self.logger.info("No character dialogue found, skipping character spoken lines")
             return []
 
-        # Sample 2-4 lines (prefer high-emotion lines)
-        target_count = random.randint(2, 4)
-        target_count = min(target_count, len(character_dialogue))
-
-        # Score lines by emotion (prioritize high-emotion lines)
+        # Identify lines that are reveals or contradictions
+        reveal_keywords = ["not", "never", "didn't", "wasn't", "can't", "won't", "actually", "truth", "real", "really"]
+        contradiction_keywords = ["but", "however", "except", "though", "although", "despite"]
+        
         scored_lines = []
         emotion_scores = {
             "angry": 3,
@@ -239,11 +310,49 @@ class VideoPlanEngine:
 
         for dialogue in character_dialogue:
             score = emotion_scores.get(dialogue.emotion.lower(), 1)
+            text_lower = dialogue.text.lower()
+            
+            # Boost score for reveals/contradictions
+            if any(kw in text_lower for kw in reveal_keywords):
+                score += 2  # Reveals are high priority
+            if any(kw in text_lower for kw in contradiction_keywords):
+                score += 1  # Contradictions are also important
+            
+            # Boost score for rhetorical questions (reveals often come as questions)
+            if "?" in dialogue.text:
+                score += 1
+            
             scored_lines.append((score, dialogue))
 
-        # Sort by score (descending) and take top N
+        # Sort by score (descending)
         scored_lines.sort(key=lambda x: x[0], reverse=True)
-        selected_dialogue = [d for _, d in scored_lines[:target_count]]
+
+        # Calculate target spacing: every 8-12 seconds
+        target_spacing = random.uniform(8.0, 12.0)
+        max_lines = int(duration_seconds / target_spacing) + 1
+        max_lines = min(max_lines, len(character_dialogue), 6)  # Cap at 6 lines max
+
+        # Select lines with timing constraints
+        selected_dialogue = []
+        current_time = 0.0
+        
+        for score, dialogue in scored_lines:
+            if len(selected_dialogue) >= max_lines:
+                break
+            
+            # Check if this line fits the timing window
+            target_time = current_time + target_spacing
+            if target_time <= duration_seconds:
+                # Update timing to match spacing
+                dialogue.approx_timing_hint = target_time
+                selected_dialogue.append(dialogue)
+                current_time = target_time
+            else:
+                # If we're near the end, still include high-scoring lines
+                if score >= 3 and len(selected_dialogue) < 3:
+                    dialogue.approx_timing_hint = min(current_time + 5.0, duration_seconds - 2.0)
+                    selected_dialogue.append(dialogue)
+                    current_time = dialogue.approx_timing_hint
 
         # Convert to CharacterSpokenLine
         character_spoken_lines = []
@@ -260,10 +369,24 @@ class VideoPlanEngine:
 
         self.logger.info(
             f"Sampled {len(character_spoken_lines)} character spoken lines "
-            f"(from {len(character_dialogue)} total character dialogue lines)"
+            f"(spaced every ~{target_spacing:.1f}s, from {len(character_dialogue)} total character dialogue lines)"
         )
 
         return character_spoken_lines
+
+    def _sample_character_spoken_lines(
+        self,
+        dialogue_plan: DialoguePlan,
+        video_scenes: list[VideoScene],
+        characters: list[Any],
+    ) -> list[CharacterSpokenLine]:
+        """
+        Legacy method - kept for backward compatibility.
+        Use _sample_character_spoken_lines_with_timing instead.
+        """
+        return self._sample_character_spoken_lines_with_timing(
+            dialogue_plan, video_scenes, characters, 60  # Default 60s
+        )
 
     def _assign_edit_pattern(
         self,
@@ -271,7 +394,7 @@ class VideoPlanEngine:
         style: str,
         num_dialogue_lines: int,
         num_narration_lines: int,
-    ) -> str:
+    ) -> EditPattern:
         """
         Assign edit pattern based on niche, dialogue/narration ratio, or weighted random.
 
@@ -292,11 +415,11 @@ class VideoPlanEngine:
         if dialogue_ratio > 0.4:  # High dialogue content
             # Strong dialogue -> talking_head_heavy
             self.logger.info(f"High dialogue ratio ({dialogue_ratio:.2f}), assigning talking_head_heavy")
-            return EDIT_PATTERN_TALKING_HEAD_HEAVY
+            return EditPattern.TALKING_HEAD_HEAVY
         elif dialogue_ratio < 0.15:  # Low dialogue content
             # Mostly narration -> broll_cinematic
             self.logger.info(f"Low dialogue ratio ({dialogue_ratio:.2f}), assigning broll_cinematic")
-            return EDIT_PATTERN_BROLL_CINEMATIC
+            return EditPattern.BROLL_CINEMATIC
 
         # For medium dialogue ratios, use weighted random based on niche/style
         pattern_weights = self._get_pattern_weights_for_niche(niche, style)
@@ -304,10 +427,17 @@ class VideoPlanEngine:
         # Sample based on weights
         patterns = list(pattern_weights.keys())
         weights = list(pattern_weights.values())
-        selected_pattern = random.choices(patterns, weights=weights, k=1)[0]
+        selected_pattern_str = random.choices(patterns, weights=weights, k=1)[0]
+        
+        # Convert string to EditPattern enum
+        try:
+            selected_pattern = EditPattern(selected_pattern_str)
+        except ValueError:
+            self.logger.warning(f"Unknown edit pattern '{selected_pattern_str}', defaulting to TALKING_HEAD_HEAVY")
+            selected_pattern = EditPattern.TALKING_HEAD_HEAVY
         
         self.logger.info(
-            f"Medium dialogue ratio ({dialogue_ratio:.2f}), sampled pattern: {selected_pattern} "
+            f"Medium dialogue ratio ({dialogue_ratio:.2f}), sampled pattern: {selected_pattern.value} "
             f"(weights: {pattern_weights})"
         )
         return selected_pattern
@@ -321,31 +451,31 @@ class VideoPlanEngine:
             style: Story style
 
         Returns:
-            Dictionary mapping pattern -> weight
+            Dictionary mapping pattern string -> weight
         """
         # Default weights
         default_weights = {
-            EDIT_PATTERN_TALKING_HEAD_HEAVY: 0.33,
-            EDIT_PATTERN_BROLL_CINEMATIC: 0.33,
-            EDIT_PATTERN_MIXED_RAPID: 0.34,
+            EditPattern.TALKING_HEAD_HEAVY.value: 0.33,
+            EditPattern.BROLL_CINEMATIC.value: 0.33,
+            EditPattern.MIXED_RAPID.value: 0.34,
         }
 
         # Niche-specific weights
         niche_weights = {
             "courtroom": {
-                EDIT_PATTERN_TALKING_HEAD_HEAVY: 0.4,
-                EDIT_PATTERN_BROLL_CINEMATIC: 0.2,
-                EDIT_PATTERN_MIXED_RAPID: 0.4,
+                EditPattern.TALKING_HEAD_HEAVY.value: 0.4,
+                EditPattern.BROLL_CINEMATIC.value: 0.2,
+                EditPattern.MIXED_RAPID.value: 0.4,
             },
             "relationship_drama": {
-                EDIT_PATTERN_TALKING_HEAD_HEAVY: 0.5,
-                EDIT_PATTERN_BROLL_CINEMATIC: 0.3,
-                EDIT_PATTERN_MIXED_RAPID: 0.2,
+                EditPattern.TALKING_HEAD_HEAVY.value: 0.5,
+                EditPattern.BROLL_CINEMATIC.value: 0.3,
+                EditPattern.MIXED_RAPID.value: 0.2,
             },
             "injustice": {
-                EDIT_PATTERN_TALKING_HEAD_HEAVY: 0.3,
-                EDIT_PATTERN_BROLL_CINEMATIC: 0.4,
-                EDIT_PATTERN_MIXED_RAPID: 0.3,
+                EditPattern.TALKING_HEAD_HEAVY.value: 0.3,
+                EditPattern.BROLL_CINEMATIC.value: 0.4,
+                EditPattern.MIXED_RAPID.value: 0.3,
             },
         }
 
@@ -355,9 +485,9 @@ class VideoPlanEngine:
         elif style == "ragebait":
             # Ragebait benefits from rapid cuts
             return {
-                EDIT_PATTERN_TALKING_HEAD_HEAVY: 0.3,
-                EDIT_PATTERN_BROLL_CINEMATIC: 0.2,
-                EDIT_PATTERN_MIXED_RAPID: 0.5,
+                EditPattern.TALKING_HEAD_HEAVY.value: 0.3,
+                EditPattern.BROLL_CINEMATIC.value: 0.2,
+                EditPattern.MIXED_RAPID.value: 0.5,
             }
 
         return niche_weights.get(niche, default_weights)

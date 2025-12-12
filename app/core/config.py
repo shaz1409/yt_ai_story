@@ -72,25 +72,69 @@ class Settings(BaseSettings):
         default="photorealistic",
         description="Character image style: 'photorealistic' (ultra-realistic) or 'artistic' (legacy style)",
     )
+    min_image_quality_score: float = Field(
+        default=0.65,
+        description="Minimum acceptable image quality score (0.0 to 1.0, default: 0.65)",
+    )
+    max_image_retry_attempts: int = Field(
+        default=3,
+        description="Maximum number of retry attempts for image generation if quality validation fails (default: 3)",
+    )
+    video_width: int = Field(
+        default=1080,
+        description="Video output width in pixels (default: 1080 for vertical format)",
+    )
+    video_height: int = Field(
+        default=1920,
+        description="Video output height in pixels (default: 1920 for vertical format)",
+    )
+    image_post_processing_enabled: bool = Field(
+        default=True,
+        description="Enable image post-processing enhancement (default: true)",
+    )
+    image_look: str = Field(
+        default="cinematic",
+        description="Image look/style: 'cinematic', 'neutral', or 'warm' (default: cinematic)",
+    )
+    image_sharpness_strength: str = Field(
+        default="medium",
+        description="Sharpness enhancement strength: 'low', 'medium', or 'high' (default: medium)",
+    )
 
     # ========================================================================
     # Lip-Sync Settings (Optional)
     # ========================================================================
+    # Lip-Sync Settings
+    lipsync_enabled: bool = Field(
+        default=False,
+        description="Enable real lip-sync for talking-heads (requires LIPSYNC_PROVIDER and API key)",
+    )
+    lipsync_provider: str = Field(
+        default="none",
+        description="Lip-sync provider: 'did', 'heygen', or 'none' (default: 'none')",
+    )
+    lipsync_api_key: Optional[str] = Field(
+        default=None,
+        description="Lip-sync API key (used for selected provider, can also use DID_API_KEY or HEYGEN_API_KEY)",
+    )
+    # Legacy D-ID settings (for backward compatibility)
     did_api_key: Optional[str] = Field(
-        default=None, description="D-ID API key for real lip-sync talking-heads (optional)"
+        default=None, description="D-ID API key for real lip-sync talking-heads (optional, legacy)"
     )
     did_api_url: str = Field(
         default="https://api.d-id.com", description="D-ID API URL (default: https://api.d-id.com)"
     )
+    # Legacy HeyGen settings (for backward compatibility)
     heygen_api_key: Optional[str] = Field(
-        default=None, description="HeyGen API key for real lip-sync talking-heads (optional)"
+        default=None, description="HeyGen API key for real lip-sync talking-heads (optional, legacy)"
     )
     heygen_api_url: str = Field(
         default="https://api.heygen.com", description="HeyGen API URL (default: https://api.heygen.com)"
     )
+    # Legacy use_lipsync setting (for backward compatibility)
     use_lipsync: bool = Field(
         default=False,
-        description="Enable real lip-sync for talking-heads (requires D-ID or HeyGen API key)",
+        description="Enable real lip-sync for talking-heads (legacy, use LIPSYNC_ENABLED instead)",
     )
 
     # ========================================================================
@@ -108,6 +152,34 @@ class Settings(BaseSettings):
     )
     elevenlabs_rate_limit: int = Field(
         default=100, description="ElevenLabs API calls per minute (default: 100)"
+    )
+
+    # ========================================================================
+    # Parallelism Settings
+    # ========================================================================
+    max_parallel_episodes: int = Field(
+        default=3,
+        description="Maximum number of episodes to process concurrently (default: 3, set to 1 for sequential)",
+    )
+    max_parallel_api_calls: int = Field(
+        default=5,
+        description="Maximum number of parallel API calls within a single episode (TTS, image generation) (default: 5)",
+    )
+
+    # ========================================================================
+    # Thumbnail Settings
+    # ========================================================================
+    thumbnail_enabled: bool = Field(
+        default=True,
+        description="Enable automatic thumbnail generation (default: true)",
+    )
+    thumbnail_mode: str = Field(
+        default="hybrid",
+        description="Thumbnail generation mode: 'frame' (extract from video), 'generated' (HF generation), or 'hybrid' (try generated, fallback to frame) (default: 'hybrid')",
+    )
+    thumbnail_add_text: bool = Field(
+        default=True,
+        description="Add title text overlay to generated thumbnails (default: true)",
     )
 
     # ========================================================================

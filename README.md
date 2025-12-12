@@ -96,6 +96,7 @@ make lint        # Basic lint check
 make run-preview # Run single pipeline (preview mode)
 make run-daily   # Run full daily batch
 make test-hf     # Test Hugging Face image generation
+make quality-dashboard  # View quality metrics dashboard
 ```
 
 ## 📝 CLI Usage
@@ -231,6 +232,28 @@ pytest tests/unit/
 pytest tests/integration/
 ```
 
+## 📊 Quality Dashboard
+
+View quality metrics and trends over time:
+
+```bash
+# Console output
+python scripts/quality_dashboard.py
+
+# Or use Makefile
+make quality-dashboard
+
+# Generate HTML report
+python scripts/quality_dashboard.py --html outputs/quality_report.html
+```
+
+The dashboard shows:
+- Overall statistics (min, max, average scores)
+- Rolling averages (last 10, last 50 episodes)
+- Recent episodes table
+- Visual/Content/Technical score breakdowns
+
+Quality scores are automatically computed and logged after each episode generation.
 
 ## 🛠️ Development
 

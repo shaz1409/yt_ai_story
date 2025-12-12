@@ -1,7 +1,7 @@
 # AI Story Shorts Factory - Makefile
 PYTHON ?= python3
 
-.PHONY: help venv install test lint run-preview run-daily test-hf
+.PHONY: help venv install test lint run-preview run-daily test-hf quality-dashboard
 
 help:
 	@echo "Available commands:"
@@ -12,6 +12,7 @@ help:
 	@echo "  make run-preview - Run single pipeline (preview mode)"
 	@echo "  make run-daily  - Run full daily batch"
 	@echo "  make test-hf    - Test Hugging Face image generation"
+	@echo "  make quality-dashboard - View quality metrics dashboard"
 
 venv:
 	$(PYTHON) -m venv venv
@@ -34,4 +35,7 @@ run-daily:
 
 test-hf:
 	venv/bin/python scripts/test_hf_image.py
+
+quality-dashboard:
+	venv/bin/python scripts/quality_dashboard.py
 

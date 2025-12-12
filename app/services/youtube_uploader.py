@@ -34,6 +34,7 @@ class YouTubeUploader:
         privacy_status: str = "public",
         category_id: str = "22",  # People & Blogs
         scheduled_publish_at: Optional[datetime] = None,
+        thumbnail_path: Optional[Path] = None,
     ) -> str:
         """
         Upload video to YouTube.
@@ -47,6 +48,7 @@ class YouTubeUploader:
             category_id: YouTube category ID (default: 22 for People & Blogs)
             scheduled_publish_at: Optional datetime for scheduled publication.
                 If provided, privacy_status will be set to "private" and video will be scheduled.
+            thumbnail_path: Optional path to thumbnail image (1280x720 JPG). If provided, will be uploaded.
 
         Returns:
             YouTube video ID or URL
@@ -149,6 +151,16 @@ class YouTubeUploader:
 
                 video_id = response["id"]
                 video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+                # Upload thumbnail if provided
+                if thumbnail_path and thumbnail_path.exists():
+                    try:
+                        self.logger.info("Uploading thumbnail...")
+                        self._upload_thumbnail(youtube, video_id, thumbnail_path)
+                        self.logger.info("✅ Thumbnail uploaded successfully")
+                    except Exception as e:
+                        self.logger.warning(f"Thumbnail upload failed (non-critical): {e}")
+                        # Don't fail the entire upload if thumbnail fails
 
                 self.logger.info("=" * 60)
                 self.logger.info("YouTube upload complete!")
@@ -281,4 +293,38 @@ class YouTubeUploader:
             raise error
 
         return response
+
+    def _upload_thumbnail(self, youtube_service, video_id: str, thumbnail_path: Path) -> None:
+        """
+        Upload thumbnail to YouTube video.
+
+        Args:
+            youtube_service: Authenticated YouTube service
+            video_id: YouTube video ID
+            thumbnail_path: Path to thumbnail image (must be 1280x720 JPG)
+        """
+        from googleapiclient.http import MediaFileUpload
+
+        # Validate thumbnail
+        if not thumbnail_path.exists():
+            raise FileNotFoundError(f"Thumbnail file not found: {thumbnail_path}")
+
+        # Check dimensions (YouTube requires 1280x720)
+        try:
+            from PIL import Image
+            img = Image.open(thumbnail_path)
+            width, height = img.size
+            if width != 1280 or height != 720:
+                self.logger.warning(
+                    f"Thumbnail dimensions are {width}x{height}, expected 1280x720. "
+                    "YouTube may reject or resize the thumbnail."
+                )
+        except Exception as e:
+            self.logger.warning(f"Could not validate thumbnail dimensions: {e}")
+
+        # Upload thumbnail
+        youtube_service.thumbnails().set(
+            videoId=video_id,
+            media_body=MediaFileUpload(str(thumbnail_path), mimetype="image/jpeg", resumable=True),
+        ).execute()
 
